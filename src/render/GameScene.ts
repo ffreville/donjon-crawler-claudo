@@ -13,49 +13,69 @@ export const TILE = 40;
 /** Max simulation steps per frame, so a stalled tab can't trigger a death spiral. */
 const MAX_STEPS_PER_FRAME = 5;
 
-interface MoveKeys {
-  up: Phaser.Input.Keyboard.Key;
-  down: Phaser.Input.Keyboard.Key;
-  left: Phaser.Input.Keyboard.Key;
-  right: Phaser.Input.Keyboard.Key;
-}
+/** Codes whose default browser action (page scroll) we suppress. */
+const CAPTURE = new Set([
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'Numpad8',
+  'Numpad2',
+  'Numpad4',
+  'Numpad6',
+]);
 
 /**
  * Thin rendering layer. It owns NO gameplay state — it reads from the pure
  * GameState, feeds input into the deterministic `tick`, and draws the result.
- * All rules live in src/core and are unit-tested headlessly.
+ *
+ * Input uses physical key positions (`event.code`), which is layout-independent:
+ * - Move: Z Q S D on AZERTY (= W A S D positions = codes KeyW/KeyA/KeyS/KeyD).
+ * - Shoot: numpad 8 4 6 2 (codes Numpad8/4/6/2), with arrow keys as a fallback.
  */
 export class GameScene extends Phaser.Scene {
   private state!: GameState;
   private player!: Phaser.GameObjects.Rectangle;
-  private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
-  private wasd!: MoveKeys;
+  private hud!: Phaser.GameObjects.Text;
   private accumulator = 0;
+
+  /** Currently held physical key codes. */
+  private readonly held = new Set<string>();
+
+  private enemySprites = new Map<number, Phaser.GameObjects.Rectangle>();
+  private projectileSprites = new Map<number, Phaser.GameObjects.Arc>();
 
   constructor() {
     super('GameScene');
   }
 
   create(): void {
-    // Fixed seed keeps the skeleton reproducible; wire this to a UI later.
     this.state = createGame(2026);
-
     this.drawRoom();
 
     const p = this.state.player.pos;
     const size = this.state.player.radius * 2 * TILE;
     this.player = this.add.rectangle(p.x * TILE, p.y * TILE, size, size, 0xffd166).setDepth(10);
 
+    this.hud = this.add
+      .text(8, 6, '', { fontFamily: 'monospace', fontSize: '16px', color: '#ffffff' })
+      .setDepth(100);
+
+    this.bindInput();
+  }
+
+  private bindInput(): void {
     const kb = this.input.keyboard;
-    if (kb) {
-      this.cursors = kb.createCursorKeys();
-      this.wasd = kb.addKeys({
-        up: Phaser.Input.Keyboard.KeyCodes.W,
-        down: Phaser.Input.Keyboard.KeyCodes.S,
-        left: Phaser.Input.Keyboard.KeyCodes.A,
-        right: Phaser.Input.Keyboard.KeyCodes.D,
-      }) as MoveKeys;
-    }
+    if (!kb) return;
+    kb.on('keydown', (event: KeyboardEvent) => {
+      this.held.add(event.code);
+      if (CAPTURE.has(event.code)) event.preventDefault();
+    });
+    kb.on('keyup', (event: KeyboardEvent) => {
+      this.held.delete(event.code);
+    });
+    // Avoid stuck keys when the window loses focus (e.g. alt-tab).
+    this.game.events.on(Phaser.Core.Events.BLUR, () => this.held.clear());
   }
 
   update(_time: number, deltaMs: number): void {
@@ -69,20 +89,79 @@ export class GameScene extends Phaser.Scene {
       steps++;
     }
 
-    const p = this.state.player.pos;
-    this.player.setPosition(p.x * TILE, p.y * TILE);
+    this.render();
   }
 
   private readInput(): InputState {
-    const left = this.isDown('left');
-    const right = this.isDown('right');
-    const up = this.isDown('up');
-    const down = this.isDown('down');
-    return { moveX: (right ? 1 : 0) - (left ? 1 : 0), moveY: (down ? 1 : 0) - (up ? 1 : 0) };
+    const h = this.held;
+    // Movement: AZERTY Z Q S D (physical W A S D positions).
+    const moveUp = h.has('KeyW');
+    const moveDown = h.has('KeyS');
+    const moveLeft = h.has('KeyA');
+    const moveRight = h.has('KeyD');
+    // Shooting: numpad 8 4 6 2, with arrow keys as a fallback.
+    const aimUp = h.has('Numpad8') || h.has('ArrowUp');
+    const aimDown = h.has('Numpad2') || h.has('ArrowDown');
+    const aimLeft = h.has('Numpad4') || h.has('ArrowLeft');
+    const aimRight = h.has('Numpad6') || h.has('ArrowRight');
+    return {
+      moveX: (moveRight ? 1 : 0) - (moveLeft ? 1 : 0),
+      moveY: (moveDown ? 1 : 0) - (moveUp ? 1 : 0),
+      aimX: (aimRight ? 1 : 0) - (aimLeft ? 1 : 0),
+      aimY: (aimDown ? 1 : 0) - (aimUp ? 1 : 0),
+    };
   }
 
-  private isDown(dir: keyof MoveKeys): boolean {
-    return Boolean(this.cursors?.[dir]?.isDown) || Boolean(this.wasd?.[dir]?.isDown);
+  private render(): void {
+    const { player } = this.state;
+    this.player.setPosition(player.pos.x * TILE, player.pos.y * TILE);
+    this.player.setAlpha(player.invuln > 0 ? 0.5 : 1);
+
+    this.syncEnemies();
+    this.syncProjectiles();
+
+    this.hud.setText(`HP ${player.hp}/${player.maxHp}    enemies ${this.state.enemies.length}`);
+  }
+
+  private syncEnemies(): void {
+    const live = new Set<number>();
+    for (const e of this.state.enemies) {
+      live.add(e.id);
+      let sprite = this.enemySprites.get(e.id);
+      if (!sprite) {
+        const size = e.radius * 2 * TILE;
+        sprite = this.add.rectangle(0, 0, size, size, 0xe5484d).setDepth(5);
+        this.enemySprites.set(e.id, sprite);
+      }
+      sprite.setPosition(e.pos.x * TILE, e.pos.y * TILE);
+    }
+    this.cull(this.enemySprites, live);
+  }
+
+  private syncProjectiles(): void {
+    const live = new Set<number>();
+    for (const p of this.state.projectiles) {
+      live.add(p.id);
+      let sprite = this.projectileSprites.get(p.id);
+      if (!sprite) {
+        sprite = this.add.circle(0, 0, p.radius * TILE, 0xffe9a8).setDepth(8);
+        this.projectileSprites.set(p.id, sprite);
+      }
+      sprite.setPosition(p.pos.x * TILE, p.pos.y * TILE);
+    }
+    this.cull(this.projectileSprites, live);
+  }
+
+  private cull<T extends Phaser.GameObjects.GameObject>(
+    sprites: Map<number, T>,
+    live: Set<number>,
+  ): void {
+    for (const [id, sprite] of sprites) {
+      if (!live.has(id)) {
+        sprite.destroy();
+        sprites.delete(id);
+      }
+    }
   }
 
   private drawRoom(): void {

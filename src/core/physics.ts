@@ -71,3 +71,11 @@ export function moveBody(
 
   return { x, y };
 }
+
+/** True if two circles overlap (boundary-touching does not count). */
+export function circlesOverlap(a: Vec2, ar: number, b: Vec2, br: number): boolean {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  const r = ar + br;
+  return dx * dx + dy * dy < r * r;
+}

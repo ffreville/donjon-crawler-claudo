@@ -16,6 +16,16 @@ export function isDead(c: Combatant): boolean {
   return c.hp <= 0;
 }
 
+/**
+ * Applies a flat amount of damage (e.g. from a projectile), ignoring defense.
+ * Clamps hp at 0 and never heals. Returns the damage actually dealt.
+ */
+export function applyDamage(c: Combatant, amount: number): number {
+  const dmg = Math.max(0, amount);
+  c.hp = Math.max(0, c.hp - dmg);
+  return dmg;
+}
+
 export function heal(c: Combatant, amount: number): void {
   c.hp = Math.min(c.maxHp, c.hp + Math.max(0, amount));
 }
