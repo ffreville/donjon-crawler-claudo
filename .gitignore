@@ -3,6 +3,7 @@ node_modules/
 
 # Build output
 dist/
+dist-verify/
 *.tsbuildinfo
 
 # Vite temp config artifacts

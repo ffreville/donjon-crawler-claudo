@@ -1,5 +1,3 @@
-import type { Direction, Vec2 } from './types.js';
-
 /** Fixed interior dimensions of a single room, in tiles. */
 export const ROOM_W = 15;
 export const ROOM_H = 9;
@@ -31,16 +29,4 @@ export function makeRoomGrid(width = ROOM_W, height = ROOM_H): RoomGrid {
 export function isWall(grid: RoomGrid, x: number, y: number): boolean {
   if (x < 0 || y < 0 || x >= grid.width || y >= grid.height) return true;
   return grid.walls[y * grid.width + x] ?? true;
-}
-
-const DELTAS: Record<Direction, Vec2> = {
-  up: { x: 0, y: -1 },
-  down: { x: 0, y: 1 },
-  left: { x: -1, y: 0 },
-  right: { x: 1, y: 0 },
-};
-
-export function step(pos: Vec2, dir: Direction): Vec2 {
-  const d = DELTAS[dir];
-  return { x: pos.x + d.x, y: pos.y + d.y };
 }

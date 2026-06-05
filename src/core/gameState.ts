@@ -1,12 +1,29 @@
 import { generateDungeon, DEFAULT_DUNGEON, type DungeonOptions } from './dungeon.js';
+import { moveBody } from './physics.js';
 import { Rng } from './rng.js';
-import { isWall, makeRoomGrid, step, type RoomGrid } from './room.js';
-import type { Combatant, Direction, RoomId, Vec2 } from './types.js';
-import type { Dungeon } from './types.js';
+import { makeRoomGrid, type RoomGrid } from './room.js';
+import type { Combatant, Dungeon, RoomId, Vec2 } from './types.js';
+
+/** Fixed simulation timestep, in seconds. The render layer steps in multiples of this. */
+export const FIXED_DT = 1 / 60;
+/** Player movement speed, in tiles per second. */
+export const PLAYER_SPEED = 6;
+/** Player collision box half-extent, in tiles. */
+export const PLAYER_RADIUS = 0.4;
 
 export interface Player extends Combatant {
   pos: Vec2;
+  vel: Vec2;
+  radius: number;
 }
+
+/** Per-tick player intent. `moveX`/`moveY` are each in [-1, 1]; the vector is normalized. */
+export interface InputState {
+  moveX: number;
+  moveY: number;
+}
+
+export const NO_INPUT: InputState = { moveX: 0, moveY: 0 };
 
 /**
  * The complete, serializable simulation state. Everything the game IS lives
@@ -30,7 +47,9 @@ export function createGame(seed: number, opts: NewGameOptions = {}): GameState {
   const dungeon = generateDungeon(rng, opts.dungeon ?? DEFAULT_DUNGEON);
   const grid = makeRoomGrid();
   const player: Player = {
-    pos: { x: Math.floor(grid.width / 2), y: Math.floor(grid.height / 2) },
+    pos: { x: grid.width / 2, y: grid.height / 2 },
+    vel: { x: 0, y: 0 },
+    radius: PLAYER_RADIUS,
     hp: 6,
     maxHp: 6,
     attack: 3,
@@ -40,12 +59,21 @@ export function createGame(seed: number, opts: NewGameOptions = {}): GameState {
 }
 
 /**
- * Attempt to move the player one tile. Returns true if the move happened
- * (i.e. the destination was not a wall). Pure with respect to RNG.
+ * Advances the simulation by one fixed step. Deterministic: given the same
+ * starting state, input, and dt, it always produces the same next state.
+ *
+ * Diagonal input is normalized so moving on two axes is not faster than one.
  */
-export function movePlayer(state: GameState, dir: Direction): boolean {
-  const next = step(state.player.pos, dir);
-  if (isWall(state.grid, next.x, next.y)) return false;
-  state.player.pos = next;
-  return true;
+export function tick(state: GameState, input: InputState, dt: number): void {
+  const { player } = state;
+  const len = Math.hypot(input.moveX, input.moveY);
+  if (len > 0) {
+    player.vel = {
+      x: (input.moveX / len) * PLAYER_SPEED,
+      y: (input.moveY / len) * PLAYER_SPEED,
+    };
+  } else {
+    player.vel = { x: 0, y: 0 };
+  }
+  player.pos = moveBody(state.grid, player.pos, player.radius, player.vel.x * dt, player.vel.y * dt);
 }
