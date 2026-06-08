@@ -10,6 +10,7 @@ import {
   type GameState,
   type InputState,
 } from '../core/index.js';
+import { createButton, getShowStats, PALETTE } from './ui.js';
 
 export const TILE = 40;
 
@@ -40,10 +41,15 @@ export class GameScene extends Phaser.Scene {
   private state!: GameState;
   private player!: Phaser.GameObjects.Rectangle;
   private hud!: Phaser.GameObjects.Text;
-  private overlay!: Phaser.GameObjects.Text;
   private tooltip!: Phaser.GameObjects.Text;
   private statsPanel!: Phaser.GameObjects.Text;
   private tiles!: Phaser.GameObjects.Group;
+  /** End-of-run menu (buttons), shown on death/victory. */
+  private endMenu!: Phaser.GameObjects.Group;
+  private endShown = false;
+  /** Pause menu (buttons), shown on Escape during play. */
+  private pauseMenu!: Phaser.GameObjects.Group;
+  private paused = false;
   /** Signature of the currently-drawn room, to know when to redraw tiles. */
   private roomKey = '';
   private accumulator = 0;
@@ -74,16 +80,8 @@ export class GameScene extends Phaser.Scene {
       .text(8, 6, '', { fontFamily: 'monospace', fontSize: '16px', color: '#ffffff' })
       .setDepth(100);
 
-    this.overlay = this.add
-      .text(this.scale.width / 2, this.scale.height / 2, '', {
-        fontFamily: 'monospace',
-        fontSize: '22px',
-        color: '#ffffff',
-        align: 'center',
-      })
-      .setOrigin(0.5)
-      .setDepth(200)
-      .setVisible(false);
+    this.endMenu = this.add.group();
+    this.pauseMenu = this.add.group();
 
     this.tooltip = this.add
       .text(0, 0, '', {
@@ -110,7 +108,8 @@ export class GameScene extends Phaser.Scene {
       })
       .setOrigin(1, 0)
       .setDepth(90)
-      .setAlpha(0.6);
+      .setAlpha(0.6)
+      .setVisible(getShowStats(this));
 
     this.bindInput();
   }
@@ -119,6 +118,11 @@ export class GameScene extends Phaser.Scene {
   private startRun(): void {
     this.state = createGame(this.seed);
     this.roomKey = '';
+    this.held.clear();
+    this.accumulator = 0;
+    this.endShown = false;
+    this.paused = false;
+    this.pauseMenu?.clear(true, true);
     for (const s of this.enemySprites.values()) s.destroy();
     this.enemySprites.clear();
     for (const s of this.projectileSprites.values()) s.destroy();
@@ -140,18 +144,96 @@ export class GameScene extends Phaser.Scene {
     kb.on('keyup', (event: KeyboardEvent) => {
       this.held.delete(event.code);
     });
-    // Restart with a new run when the current one is over.
+    // End-of-run shortcuts (only once the run is over).
     kb.on('keydown-R', () => {
-      if (this.state.status !== 'playing') {
-        this.seed++;
-        this.startRun();
-      }
+      if (this.state.status !== 'playing') this.replay();
     });
-    // Avoid stuck keys when the window loses focus (e.g. alt-tab).
+    kb.on('keydown-M', () => {
+      if (this.state.status !== 'playing') this.scene.start('MenuScene');
+    });
+    // Escape: open/close the pause menu during play; go to menu once the run is over.
+    kb.on('keydown-ESC', () => {
+      if (this.state.status !== 'playing') this.scene.start('MenuScene');
+      else this.togglePause();
+    });
+    // Avoid stuck keys when the window loses focus or returns from a sub-scene.
     this.game.events.on(Phaser.Core.Events.BLUR, () => this.held.clear());
+    this.events.on(Phaser.Scenes.Events.RESUME, () => this.held.clear());
+  }
+
+  private togglePause(): void {
+    if (this.paused) {
+      this.paused = false;
+      this.pauseMenu.clear(true, true);
+    } else {
+      this.paused = true;
+      this.showPauseMenu();
+    }
+  }
+
+  private showPauseMenu(): void {
+    const { width, height } = this.scale;
+    const dim = this.add.rectangle(0, 0, width, height, PALETTE.bg, 0.82).setOrigin(0).setDepth(200);
+    const title = this.add
+      .text(width / 2, height * 0.26, 'PAUSE', {
+        fontFamily: 'monospace',
+        fontSize: '36px',
+        color: PALETTE.accent,
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5)
+      .setDepth(201);
+    const resume = createButton(this, width / 2, height * 0.48, 'Reprendre  (Echap)', () =>
+      this.togglePause(),
+    ).setDepth(201);
+    const options = createButton(this, width / 2, height * 0.48 + 64, 'Options', () => {
+      this.scene.pause();
+      this.scene.launch('OptionsScene', { returnTo: 'GameScene' });
+      // GameScene is last in the scene list, so it renders over a launched
+      // overlay — bring Options to the front so it's actually visible/clickable.
+      this.scene.bringToTop('OptionsScene');
+    }).setDepth(201);
+    const menu = createButton(this, width / 2, height * 0.48 + 128, 'Menu principal', () =>
+      this.scene.start('MenuScene'),
+    ).setDepth(201);
+    this.pauseMenu.addMultiple([dim, title, resume, options, menu]);
+  }
+
+  private replay(): void {
+    this.seed++;
+    this.startRun();
+    this.hideEndMenu();
+  }
+
+  private showEndMenu(won: boolean): void {
+    this.endShown = true;
+    const { width, height } = this.scale;
+    const dim = this.add.rectangle(0, 0, width, height, PALETTE.bg, 0.82).setOrigin(0).setDepth(200);
+    const title = this.add
+      .text(width / 2, height * 0.3, won ? 'VICTORY' : 'GAME OVER', {
+        fontFamily: 'monospace',
+        fontSize: '36px',
+        color: won ? '#7cffb2' : '#ff8080',
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5)
+      .setDepth(201);
+    const replay = createButton(this, width / 2, height * 0.52, 'Rejouer  (R)', () =>
+      this.replay(),
+    ).setDepth(201);
+    const menu = createButton(this, width / 2, height * 0.52 + 64, 'Menu principal  (M)', () =>
+      this.scene.start('MenuScene'),
+    ).setDepth(201);
+    this.endMenu.addMultiple([dim, title, replay, menu]);
+  }
+
+  private hideEndMenu(): void {
+    this.endMenu.clear(true, true);
+    this.endShown = false;
   }
 
   update(_time: number, deltaMs: number): void {
+    if (this.paused) return; // frozen; the pause menu renders on its own
     this.accumulator += deltaMs / 1000;
     const input = this.readInput();
 
@@ -210,6 +292,7 @@ export class GameScene extends Phaser.Scene {
       `HP ${player.hp}/${player.maxHp}   floor ${this.state.floor}   room: ${type}${lock}   enemies ${this.state.enemies.length}`,
     );
 
+    this.statsPanel.setVisible(getShowStats(this)); // reflect the Options toggle live
     const num = (n: number): string => (Number.isInteger(n) ? `${n}` : n.toFixed(1));
     const itemLines =
       player.items.length > 0 ? player.items.map((id) => `· ${id}`).join('\n') : '· none';
@@ -227,12 +310,10 @@ export class GameScene extends Phaser.Scene {
       ].join('\n'),
     );
 
-    if (this.state.status === 'dead') {
-      this.overlay.setText('GAME OVER\n\npress R to try again').setVisible(true);
-    } else if (this.state.status === 'won') {
-      this.overlay.setText('VICTORY\n\npress R for a new run').setVisible(true);
-    } else {
-      this.overlay.setVisible(false);
+    if (this.state.status !== 'playing') {
+      if (!this.endShown) this.showEndMenu(this.state.status === 'won');
+    } else if (this.endShown) {
+      this.hideEndMenu();
     }
   }
 
