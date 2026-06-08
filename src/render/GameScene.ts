@@ -37,6 +37,9 @@ export class GameScene extends Phaser.Scene {
   private state!: GameState;
   private player!: Phaser.GameObjects.Rectangle;
   private hud!: Phaser.GameObjects.Text;
+  private tiles!: Phaser.GameObjects.Group;
+  /** Signature of the currently-drawn room, to know when to redraw tiles. */
+  private roomKey = '';
   private accumulator = 0;
 
   /** Currently held physical key codes. */
@@ -51,7 +54,7 @@ export class GameScene extends Phaser.Scene {
 
   create(): void {
     this.state = createGame(2026);
-    this.drawRoom();
+    this.tiles = this.add.group();
 
     const p = this.state.player.pos;
     const size = this.state.player.radius * 2 * TILE;
@@ -113,14 +116,26 @@ export class GameScene extends Phaser.Scene {
   }
 
   private render(): void {
-    const { player } = this.state;
+    const { player, dungeon, currentRoom, doorsOpen } = this.state;
+
+    // The grid changes when the room changes or its doors open — redraw then.
+    const key = `${currentRoom}:${doorsOpen}`;
+    if (key !== this.roomKey) {
+      this.drawRoom();
+      this.roomKey = key;
+    }
+
     this.player.setPosition(player.pos.x * TILE, player.pos.y * TILE);
     this.player.setAlpha(player.invuln > 0 ? 0.5 : 1);
 
     this.syncEnemies();
     this.syncProjectiles();
 
-    this.hud.setText(`HP ${player.hp}/${player.maxHp}    enemies ${this.state.enemies.length}`);
+    const type = dungeon.rooms.get(currentRoom)?.type ?? '?';
+    const lock = doorsOpen ? '' : '  [LOCKED]';
+    this.hud.setText(
+      `HP ${player.hp}/${player.maxHp}   room: ${type}${lock}   enemies ${this.state.enemies.length}`,
+    );
   }
 
   private syncEnemies(): void {
@@ -165,13 +180,15 @@ export class GameScene extends Phaser.Scene {
   }
 
   private drawRoom(): void {
+    this.tiles.clear(true, true);
     const { grid } = this.state;
     for (let y = 0; y < grid.height; y++) {
       for (let x = 0; x < grid.width; x++) {
         const color = isWall(grid, x, y) ? 0x2a2a3a : 0x1b1b26;
-        this.add
+        const tile = this.add
           .rectangle(x * TILE + TILE / 2, y * TILE + TILE / 2, TILE - 1, TILE - 1, color)
           .setStrokeStyle(1, 0x0f0f16);
+        this.tiles.add(tile);
       }
     }
   }

@@ -46,7 +46,9 @@ describe('gameState', () => {
   });
 
   it('cannot pass through walls', () => {
-    const s = createGame(1);
+    // enemyCount:1 keeps the start room locked, so its border stays solid
+    // (an open room would carve door openings the player could escape through).
+    const s = createGame(1, { enemyCount: 1 });
     run(s, { moveX: -1, moveY: 0 }, 300); // push left into the wall for 5s
     expect(s.player.pos.x).toBeGreaterThanOrEqual(1 + PLAYER_RADIUS);
     expect(aabbHitsWall(s.grid, s.player.pos.x, s.player.pos.y, s.player.radius)).toBe(false);

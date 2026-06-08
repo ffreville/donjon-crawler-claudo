@@ -34,3 +34,9 @@ export interface Combatant {
 }
 
 export type Direction = 'up' | 'down' | 'left' | 'right';
+
+/** A connection from the current room to a neighbor, on a given side. */
+export interface Door {
+  dir: Direction;
+  to: RoomId;
+}

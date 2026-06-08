@@ -1,5 +1,5 @@
 import type { Rng } from './rng.js';
-import type { Dungeon, Room, RoomId, RoomType } from './types.js';
+import type { Direction, Door, Dungeon, Room, RoomId, RoomType } from './types.js';
 
 export interface DungeonOptions {
   /** Total number of rooms to place (including start and boss). */
@@ -137,4 +137,24 @@ export function bfsDistances(rooms: Map<RoomId, Room>, source: RoomId): Map<Room
 export function isConnected(dungeon: Dungeon): boolean {
   const reached = bfsDistances(dungeon.rooms, dungeon.startRoom);
   return reached.size === dungeon.rooms.size;
+}
+
+/** The cardinal direction from room `a` to its orthogonally-adjacent neighbor `b`. */
+export function directionTo(a: Room, b: Room): Direction {
+  if (b.gx > a.gx) return 'right';
+  if (b.gx < a.gx) return 'left';
+  if (b.gy > a.gy) return 'down';
+  return 'up';
+}
+
+/** The doors of a room: one per neighbor, on the side facing that neighbor. */
+export function computeDoors(dungeon: Dungeon, roomId: RoomId): Door[] {
+  const room = dungeon.rooms.get(roomId);
+  if (!room) return [];
+  const doors: Door[] = [];
+  for (const nId of room.neighbors) {
+    const neighbor = dungeon.rooms.get(nId);
+    if (neighbor) doors.push({ dir: directionTo(room, neighbor), to: nId });
+  }
+  return doors;
 }
