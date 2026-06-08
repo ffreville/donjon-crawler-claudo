@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ENEMY_ARCHETYPES } from './entities.js';
 import { createGame, descendToNextFloor, enterRoom, MAX_FLOORS, type GameState } from './gameState.js';
 
 const firstNormalId = (s: GameState): number => {
@@ -33,14 +34,18 @@ describe('floors', () => {
     expect(s.currentRoom).toBe(s.dungeon.startRoom);
   });
 
-  it('scales enemy HP with the floor', () => {
+  it('scales enemy HP with the floor (per archetype)', () => {
     const s = createGame(7);
     enterRoom(s, firstNormalId(s));
-    expect(s.enemies[0]!.hp).toBe(6); // floor 1 base
+    for (const e of s.enemies) {
+      expect(e.maxHp).toBe(ENEMY_ARCHETYPES[e.kind].hp); // floor 1: base, +0
+    }
 
     descendToNextFloor(s);
     enterRoom(s, firstNormalId(s));
-    expect(s.enemies[0]!.hp).toBe(8); // floor 2: +2
+    for (const e of s.enemies) {
+      expect(e.maxHp).toBe(ENEMY_ARCHETYPES[e.kind].hp + 2); // floor 2: +2
+    }
   });
 
   it('scales the boss HP with the floor', () => {

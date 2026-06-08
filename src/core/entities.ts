@@ -1,15 +1,27 @@
 import type { Combatant, Vec2 } from './types.js';
 
-/** A hostile entity that chases the player and deals contact damage. */
+/**
+ * Behaviour archetype:
+ * - chaser: walks straight at the player (the default melee threat)
+ * - swarmer: fast and fragile
+ * - shooter: keeps its distance and fires projectiles
+ * - tank: slow, high HP, hits hard
+ */
+export type EnemyKind = 'chaser' | 'swarmer' | 'shooter' | 'tank';
+
+/** A hostile entity. Behaviour is driven by `kind`. */
 export interface Enemy extends Combatant {
   id: number;
+  kind: EnemyKind;
   pos: Vec2;
   vel: Vec2;
   radius: number;
-  /** Chase speed, in tiles per second. */
+  /** Movement speed, in tiles per second. */
   speed: number;
   /** Damage dealt to the player on contact. */
   touchDamage: number;
+  /** Seconds until this enemy can fire again (shooters only). */
+  fireCooldown: number;
 }
 
 export type ProjectileSource = 'player' | 'enemy';
@@ -60,6 +72,7 @@ export function makeHeart(id: number, pos: Vec2, heal = 1, radius = 0.3): HeartP
 }
 
 export interface EnemyStats {
+  kind?: EnemyKind;
   hp?: number;
   speed?: number;
   radius?: number;
@@ -68,19 +81,31 @@ export interface EnemyStats {
   defense?: number;
 }
 
+/** Base stats per archetype (before per-floor scaling). */
+export const ENEMY_ARCHETYPES: Record<EnemyKind, Required<Omit<EnemyStats, 'kind'>>> = {
+  chaser: { hp: 6, speed: 2.5, radius: 0.4, touchDamage: 1, attack: 0, defense: 0 },
+  swarmer: { hp: 3, speed: 4.2, radius: 0.28, touchDamage: 1, attack: 0, defense: 0 },
+  shooter: { hp: 5, speed: 1.8, radius: 0.4, touchDamage: 1, attack: 0, defense: 0 },
+  tank: { hp: 14, speed: 1.2, radius: 0.6, touchDamage: 2, attack: 0, defense: 0 },
+};
+
 export function makeEnemy(id: number, pos: Vec2, stats: EnemyStats = {}): Enemy {
-  const hp = stats.hp ?? 6;
+  const kind = stats.kind ?? 'chaser';
+  const base = ENEMY_ARCHETYPES[kind];
+  const hp = stats.hp ?? base.hp;
   return {
     id,
+    kind,
     pos: { x: pos.x, y: pos.y },
     vel: { x: 0, y: 0 },
-    radius: stats.radius ?? 0.4,
-    speed: stats.speed ?? 2.5,
-    touchDamage: stats.touchDamage ?? 1,
+    radius: stats.radius ?? base.radius,
+    speed: stats.speed ?? base.speed,
+    touchDamage: stats.touchDamage ?? base.touchDamage,
+    fireCooldown: 0,
     hp,
     maxHp: hp,
-    attack: stats.attack ?? 0,
-    defense: stats.defense ?? 0,
+    attack: stats.attack ?? base.attack,
+    defense: stats.defense ?? base.defense,
   };
 }
 

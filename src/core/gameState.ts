@@ -6,11 +6,13 @@ import {
   type DungeonOptions,
 } from './dungeon.js';
 import {
+  ENEMY_ARCHETYPES,
   makeEnemy,
   makeHeart,
   makePickup,
   makeProjectile,
   type Enemy,
+  type EnemyKind,
   type Pickup,
   type Projectile,
 } from './entities.js';
@@ -62,7 +64,6 @@ export const TELEPORTER_RADIUS = 0.5;
 export const MAX_FLOORS = 3;
 
 /** Difficulty scaling per floor (floor 1 = base values). */
-const BASE_ENEMY_HP = 6;
 const ENEMY_HP_PER_FLOOR = 2;
 const ENEMIES_PER_FLOOR = 1;
 const BOSS_HP_BASE = 30;
@@ -71,6 +72,15 @@ const BOSS_HP_PER_FLOOR = 15;
 /** Chance that clearing a combat room drops a healing heart, and how much it heals. */
 export const HEART_DROP_CHANCE = 0.3;
 export const HEART_HEAL = 1;
+
+/** Shooter-enemy projectile tuning. */
+export const ENEMY_SHOT_SPEED = 7;
+export const ENEMY_SHOT_DAMAGE = 1;
+export const ENEMY_SHOT_LIFE = 2.5;
+export const ENEMY_FIRE_INTERVAL = 1.6;
+/** Distance a shooter tries to hold from the player, and the range within which it fires. */
+const SHOOTER_RANGE = 5;
+const SHOOTER_FIRE_RANGE = 8;
 
 /** Lifecycle of a single run. The simulation only advances while 'playing'. */
 export type RunStatus = 'playing' | 'dead' | 'won';
@@ -257,7 +267,6 @@ export function populateRoom(state: GameState, roomId: RoomId, forcedCount?: num
   if (!room) return;
   const rng = new Rng(roomSeed(state.seed, state.floor, roomId));
   const tier = state.floor - 1; // 0 on floor 1
-  const enemyHp = BASE_ENEMY_HP + tier * ENEMY_HP_PER_FLOOR;
 
   if (forcedCount === undefined && room.type === 'boss') {
     rt.enemies.push(
@@ -284,6 +293,11 @@ export function populateRoom(state: GameState, roomId: RoomId, forcedCount?: num
   else if (room.type === 'normal') count = rng.range(2, 4) + tier * ENEMIES_PER_FLOOR;
   else count = 0; // start, treasure, shop
 
+  // Available archetypes grow with the floor, so deeper floors feel more varied.
+  const kindPool: EnemyKind[] = ['chaser', 'swarmer'];
+  if (state.floor >= 2) kindPool.push('shooter');
+  if (state.floor >= 3) kindPool.push('tank');
+
   let placed = 0;
   let attempts = 0;
   const maxAttempts = count * 50;
@@ -293,7 +307,18 @@ export function populateRoom(state: GameState, roomId: RoomId, forcedCount?: num
     const ty = rng.range(1, ROOM_H - 2);
     const pos: Vec2 = { x: tx + 0.5, y: ty + 0.5 };
     if (Math.hypot(pos.x - center.x, pos.y - center.y) < 3) continue;
-    rt.enemies.push(makeEnemy(state.nextEntityId++, pos, { hp: enemyHp }));
+    const kind = rng.pick(kindPool);
+    const r = ENEMY_ARCHETYPES[kind].radius;
+    // Keep the whole body inside the open interior (matters for the wide tank).
+    const spawn: Vec2 = {
+      x: Math.min(Math.max(pos.x, 1 + r), ROOM_W - 1 - r),
+      y: Math.min(Math.max(pos.y, 1 + r), ROOM_H - 1 - r),
+    };
+    const hp = ENEMY_ARCHETYPES[kind].hp + tier * ENEMY_HP_PER_FLOOR;
+    const enemy = makeEnemy(state.nextEntityId++, spawn, { kind, hp });
+    // Stagger shooter cooldowns so they don't all fire on the same tick.
+    if (kind === 'shooter') enemy.fireCooldown = rng.next() * ENEMY_FIRE_INTERVAL;
+    rt.enemies.push(enemy);
     placed++;
   }
 }
@@ -404,9 +429,43 @@ function stepEnemies(state: GameState, dt: number): void {
   for (const enemy of state.enemies) {
     const dx = player.pos.x - enemy.pos.x;
     const dy = player.pos.y - enemy.pos.y;
-    const len = Math.hypot(dx, dy);
-    enemy.vel = len > 0 ? { x: (dx / len) * enemy.speed, y: (dy / len) * enemy.speed } : { x: 0, y: 0 };
-    enemy.pos = moveBody(grid, enemy.pos, enemy.radius, enemy.vel.x * dt, enemy.vel.y * dt);
+    const dist = Math.hypot(dx, dy) || 1;
+    const ux = dx / dist;
+    const uy = dy / dist;
+
+    let vx = 0;
+    let vy = 0;
+    if (enemy.kind === 'shooter') {
+      // Hold a standoff distance: retreat if too close, approach if too far.
+      if (dist < SHOOTER_RANGE - 0.5) {
+        vx = -ux * enemy.speed;
+        vy = -uy * enemy.speed;
+      } else if (dist > SHOOTER_RANGE + 0.5) {
+        vx = ux * enemy.speed;
+        vy = uy * enemy.speed;
+      }
+      enemy.fireCooldown = Math.max(0, enemy.fireCooldown - dt);
+      if (enemy.fireCooldown <= 0 && dist < SHOOTER_FIRE_RANGE) {
+        state.projectiles.push(
+          makeProjectile(
+            state.nextEntityId++,
+            enemy.pos,
+            { x: ux * ENEMY_SHOT_SPEED, y: uy * ENEMY_SHOT_SPEED },
+            ENEMY_SHOT_DAMAGE,
+            ENEMY_SHOT_LIFE,
+            'enemy',
+          ),
+        );
+        enemy.fireCooldown = ENEMY_FIRE_INTERVAL;
+      }
+    } else {
+      // chaser / swarmer / tank: walk straight at the player.
+      vx = ux * enemy.speed;
+      vy = uy * enemy.speed;
+    }
+
+    enemy.vel = { x: vx, y: vy };
+    enemy.pos = moveBody(grid, enemy.pos, enemy.radius, vx * dt, vy * dt);
   }
 }
 
@@ -433,6 +492,16 @@ function stepProjectiles(state: GameState, dt: number): void {
         }
       }
       if (hit) continue; // projectile consumed
+    } else {
+      // Enemy projectile: hit the player (negated but still consumed during i-frames).
+      const player = state.player;
+      if (circlesOverlap(p.pos, p.radius, player.pos, player.radius)) {
+        if (player.invuln <= 0) {
+          applyDamage(player, p.damage);
+          player.invuln = PLAYER_IFRAMES;
+        }
+        continue; // projectile consumed
+      }
     }
     survivors.push(p);
   }

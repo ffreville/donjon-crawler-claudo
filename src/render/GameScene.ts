@@ -7,12 +7,21 @@ import {
   TELEPORTER_POS,
   TELEPORTER_RADIUS,
   tick,
+  type EnemyKind,
   type GameState,
   type InputState,
 } from '../core/index.js';
 import { createButton, getShowStats, PALETTE } from './ui.js';
 
 export const TILE = 40;
+
+/** Enemy fill color per archetype. */
+const ENEMY_COLORS: Record<EnemyKind, number> = {
+  chaser: 0xe5484d,
+  swarmer: 0xff9f43,
+  shooter: 0x5b8cff,
+  tank: 0x9b6b3a,
+};
 
 /** Max simulation steps per frame, so a stalled tab can't trigger a death spiral. */
 const MAX_STEPS_PER_FRAME = 5;
@@ -324,7 +333,7 @@ export class GameScene extends Phaser.Scene {
       let sprite = this.enemySprites.get(e.id);
       if (!sprite) {
         const size = e.radius * 2 * TILE;
-        sprite = this.add.rectangle(0, 0, size, size, 0xe5484d).setDepth(5);
+        sprite = this.add.rectangle(0, 0, size, size, ENEMY_COLORS[e.kind]).setDepth(5);
         this.enemySprites.set(e.id, sprite);
       }
       sprite.setPosition(e.pos.x * TILE, e.pos.y * TILE);
@@ -338,7 +347,8 @@ export class GameScene extends Phaser.Scene {
       live.add(p.id);
       let sprite = this.projectileSprites.get(p.id);
       if (!sprite) {
-        sprite = this.add.circle(0, 0, p.radius * TILE, 0xffe9a8).setDepth(8);
+        const color = p.source === 'enemy' ? 0xff5d5d : 0xffe9a8;
+        sprite = this.add.circle(0, 0, p.radius * TILE, color).setDepth(8);
         this.projectileSprites.set(p.id, sprite);
       }
       sprite.setPosition(p.pos.x * TILE, p.pos.y * TILE);
