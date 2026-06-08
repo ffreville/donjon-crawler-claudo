@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import {
   createGame,
   FIXED_DT,
+  getItem,
   isWall,
   TELEPORTER_POS,
   TELEPORTER_RADIUS,
@@ -40,6 +41,8 @@ export class GameScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Rectangle;
   private hud!: Phaser.GameObjects.Text;
   private overlay!: Phaser.GameObjects.Text;
+  private tooltip!: Phaser.GameObjects.Text;
+  private statsPanel!: Phaser.GameObjects.Text;
   private tiles!: Phaser.GameObjects.Group;
   /** Signature of the currently-drawn room, to know when to redraw tiles. */
   private roomKey = '';
@@ -81,6 +84,33 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setDepth(200)
       .setVisible(false);
+
+    this.tooltip = this.add
+      .text(0, 0, '', {
+        fontFamily: 'monospace',
+        fontSize: '13px',
+        color: '#e7fbff',
+        backgroundColor: '#10202bdd',
+        align: 'center',
+        padding: { x: 6, y: 4 },
+      })
+      .setOrigin(0.5, 1)
+      .setDepth(150)
+      .setVisible(false);
+
+    // Semi-transparent character stats panel pinned to the right edge.
+    this.statsPanel = this.add
+      .text(this.scale.width - 8, 8, '', {
+        fontFamily: 'monospace',
+        fontSize: '13px',
+        color: '#dff1ff',
+        align: 'right',
+        backgroundColor: '#0a131baa',
+        padding: { x: 8, y: 6 },
+      })
+      .setOrigin(1, 0)
+      .setDepth(90)
+      .setAlpha(0.6);
 
     this.bindInput();
   }
@@ -172,12 +202,29 @@ export class GameScene extends Phaser.Scene {
     this.syncProjectiles();
     this.syncPickups();
     this.syncTeleporter();
+    this.updateItemTooltip();
 
     const type = dungeon.rooms.get(currentRoom)?.type ?? '?';
     const lock = doorsOpen ? '' : '  [LOCKED]';
-    const items = player.items.length > 0 ? `   items: ${player.items.join(', ')}` : '';
     this.hud.setText(
-      `HP ${player.hp}/${player.maxHp}   room: ${type}${lock}   enemies ${this.state.enemies.length}${items}`,
+      `HP ${player.hp}/${player.maxHp}   floor ${this.state.floor}   room: ${type}${lock}   enemies ${this.state.enemies.length}`,
+    );
+
+    const num = (n: number): string => (Number.isInteger(n) ? `${n}` : n.toFixed(1));
+    const itemLines =
+      player.items.length > 0 ? player.items.map((id) => `· ${id}`).join('\n') : '· none';
+    this.statsPanel.setText(
+      [
+        'STATS',
+        `HP    ${player.hp}/${player.maxHp}`,
+        `DMG   ${num(player.tearDamage)}`,
+        `RATE  ${num(player.fireRate)}/s`,
+        `SPEED ${num(player.speed)}`,
+        `FLOOR ${this.state.floor}`,
+        '',
+        'ITEMS',
+        itemLines,
+      ].join('\n'),
     );
 
     if (this.state.status === 'dead') {
@@ -224,12 +271,45 @@ export class GameScene extends Phaser.Scene {
       live.add(pk.id);
       let sprite = this.pickupSprites.get(pk.id);
       if (!sprite) {
-        sprite = this.add.circle(0, 0, pk.radius * TILE, 0x4ad6c8).setDepth(6);
+        const color = pk.kind === 'heart' ? 0xff6b81 : 0x4ad6c8;
+        sprite = this.add.circle(0, 0, pk.radius * TILE, color).setDepth(6);
         this.pickupSprites.set(pk.id, sprite);
       }
       sprite.setPosition(pk.pos.x * TILE, pk.pos.y * TILE);
     }
     this.cull(this.pickupSprites, live);
+  }
+
+  /** Shows the nearby pickup's name + effect when the player is within ~1 tile. */
+  private updateItemTooltip(): void {
+    const SHOW_RANGE = 2.5; // ~2 tiles between the player and the item, center-to-center
+    const p = this.state.player.pos;
+    let nearest: (typeof this.state.pickups)[number] | undefined;
+    let best = Infinity;
+    for (const pk of this.state.pickups) {
+      const d = Math.hypot(p.x - pk.pos.x, p.y - pk.pos.y);
+      if (d < best) {
+        best = d;
+        nearest = pk;
+      }
+    }
+    if (nearest && best <= SHOW_RANGE) {
+      let label: string | undefined;
+      if (nearest.kind === 'heart') {
+        label = `Heart\nRestores ${nearest.heal} HP.`;
+      } else {
+        const item = getItem(nearest.itemId);
+        if (item) label = `${item.name}\n${item.description}`;
+      }
+      if (label) {
+        this.tooltip
+          .setText(label)
+          .setPosition(nearest.pos.x * TILE, nearest.pos.y * TILE - nearest.radius * TILE - 6)
+          .setVisible(true);
+        return;
+      }
+    }
+    this.tooltip.setVisible(false);
   }
 
   private syncTeleporter(): void {

@@ -25,16 +25,38 @@ export interface Projectile {
   source: ProjectileSource;
 }
 
-/** A collectible item lying in a room. Picked up on contact with the player. */
-export interface Pickup {
+export type PickupKind = 'item' | 'heart';
+
+interface PickupBase {
   id: number;
   pos: Vec2;
-  itemId: string;
   radius: number;
 }
 
-export function makePickup(id: number, pos: Vec2, itemId: string, radius = 0.35): Pickup {
-  return { id, pos: { x: pos.x, y: pos.y }, itemId, radius };
+/** A pickup that grants an item by id. */
+export interface ItemPickup extends PickupBase {
+  kind: 'item';
+  itemId: string;
+}
+
+/** A pickup that heals the player by `heal` HP. */
+export interface HeartPickup extends PickupBase {
+  kind: 'heart';
+  heal: number;
+}
+
+/**
+ * A collectible lying in a room, picked up on contact. Discriminated on `kind`
+ * so the compiler guarantees `itemId` / `heal` are present for the right kind.
+ */
+export type Pickup = ItemPickup | HeartPickup;
+
+export function makePickup(id: number, pos: Vec2, itemId: string, radius = 0.35): ItemPickup {
+  return { id, pos: { x: pos.x, y: pos.y }, radius, kind: 'item', itemId };
+}
+
+export function makeHeart(id: number, pos: Vec2, heal = 1, radius = 0.3): HeartPickup {
+  return { id, pos: { x: pos.x, y: pos.y }, radius, kind: 'heart', heal };
 }
 
 export interface EnemyStats {

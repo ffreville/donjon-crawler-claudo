@@ -12,6 +12,13 @@ const baseStats = (over: Partial<MutableStats> = {}): MutableStats => ({
   ...over,
 });
 
+/** Reads the itemId of the (item) pickup currently in the room. */
+const currentItemId = (s: GameState): string => {
+  const p = s.pickups[0];
+  if (!p || p.kind !== 'item') throw new Error('expected an item pickup');
+  return p.itemId;
+};
+
 /** Finds a seed whose dungeon contains a treasure room. */
 const gameWithTreasure = (): { seed: number; treasureId: number } => {
   for (let seed = 1; seed < 300; seed++) {
@@ -57,7 +64,7 @@ describe('treasure pickups', () => {
     const { seed, treasureId } = gameWithTreasure();
     const s: GameState = createGame(seed);
     enterRoom(s, treasureId); // player arrives at room center, on the pickup
-    const itemId = s.pickups[0]!.itemId;
+    const itemId = currentItemId(s);
     tick(s, NO_INPUT, FIXED_DT);
     expect(s.pickups).toHaveLength(0);
     expect(s.player.items).toContain(itemId);
@@ -69,6 +76,6 @@ describe('treasure pickups', () => {
     const b = createGame(seed);
     enterRoom(a, treasureId);
     enterRoom(b, treasureId);
-    expect(a.pickups[0]!.itemId).toBe(b.pickups[0]!.itemId);
+    expect(currentItemId(a)).toBe(currentItemId(b));
   });
 });

@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { makeEnemy } from './entities.js';
-import { createGame, enterRoom, FIXED_DT, NO_INPUT, tick, TELEPORTER_POS } from './gameState.js';
+import {
+  createGame,
+  enterRoom,
+  FIXED_DT,
+  MAX_FLOORS,
+  NO_INPUT,
+  tick,
+  TELEPORTER_POS,
+} from './gameState.js';
 
 describe('run lifecycle', () => {
   it('ends in death when the player reaches 0 HP', () => {
@@ -47,13 +55,28 @@ describe('run lifecycle', () => {
     expect(s.doorsOpen).toBe(true); // floor is open for backtracking
   });
 
-  it('wins only once the player reaches the teleporter', () => {
+  it('descends to the next floor (not a win) when not on the final floor', () => {
     const s = createGame(1);
+    s.player.items.push('marker'); // progression we expect to survive the descent
+    enterRoom(s, s.dungeon.bossRoom);
+    s.enemies.length = 0;
+    tick(s, NO_INPUT, FIXED_DT); // boss defeated
+    expect(s.floor).toBe(1);
+
+    s.player.pos = { x: TELEPORTER_POS.x, y: TELEPORTER_POS.y };
+    tick(s, NO_INPUT, FIXED_DT); // step on teleporter
+    expect(s.status).toBe('playing');
+    expect(s.floor).toBe(2);
+    expect(s.bossDefeated).toBe(false); // fresh floor
+    expect(s.player.items).toContain('marker'); // progression carried over
+  });
+
+  it('wins by reaching the teleporter on the final floor', () => {
+    const s = createGame(1);
+    s.floor = MAX_FLOORS; // pretend we are on the last floor
     enterRoom(s, s.dungeon.bossRoom);
     s.enemies.length = 0;
     tick(s, NO_INPUT, FIXED_DT);
-    expect(s.status).toBe('playing');
-
     s.player.pos = { x: TELEPORTER_POS.x, y: TELEPORTER_POS.y };
     tick(s, NO_INPUT, FIXED_DT);
     expect(s.status).toBe('won');

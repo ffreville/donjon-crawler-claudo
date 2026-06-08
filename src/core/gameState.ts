@@ -1,4 +1,4 @@
-import { applyDamage, isDead } from './combat.js';
+import { applyDamage, heal, isDead } from './combat.js';
 import {
   computeDoors,
   generateDungeon,
@@ -7,6 +7,7 @@ import {
 } from './dungeon.js';
 import {
   makeEnemy,
+  makeHeart,
   makePickup,
   makeProjectile,
   type Enemy,
@@ -32,8 +33,8 @@ import type { Combatant, Direction, Door, Dungeon, RoomId, Vec2 } from './types.
 export const FIXED_DT = 1 / 60;
 /** Player movement speed, in tiles per second. */
 export const PLAYER_SPEED = 6;
-/** Player collision box half-extent, in tiles. */
-export const PLAYER_RADIUS = 0.4;
+/** Player collision box half-extent, in tiles. Slightly under 0.5 for door clearance. */
+export const PLAYER_RADIUS = 0.35;
 
 /** Projectile speed, in tiles per second. */
 export const PROJECTILE_SPEED = 12;
@@ -56,6 +57,20 @@ export const BOSS_ROOM_ENTRY: Vec2 = { x: ROOM_W / 2, y: ROOM_H - 1.5 };
 /** The victory teleporter that appears (where the boss stood) once it is defeated. */
 export const TELEPORTER_POS: Vec2 = { x: ROOM_W / 2, y: 2.5 };
 export const TELEPORTER_RADIUS = 0.5;
+
+/** Number of floors to clear; reaching the teleporter on the last one wins. */
+export const MAX_FLOORS = 3;
+
+/** Difficulty scaling per floor (floor 1 = base values). */
+const BASE_ENEMY_HP = 6;
+const ENEMY_HP_PER_FLOOR = 2;
+const ENEMIES_PER_FLOOR = 1;
+const BOSS_HP_BASE = 30;
+const BOSS_HP_PER_FLOOR = 15;
+
+/** Chance that clearing a combat room drops a healing heart, and how much it heals. */
+export const HEART_DROP_CHANCE = 0.3;
+export const HEART_HEAL = 1;
 
 /** Lifecycle of a single run. The simulation only advances while 'playing'. */
 export type RunStatus = 'playing' | 'dead' | 'won';
@@ -126,6 +141,10 @@ export interface GameState {
   status: RunStatus;
   /** Set once the boss is defeated; the victory teleporter then exists in the boss room. */
   bossDefeated: boolean;
+  /** Current floor number, starting at 1. */
+  floor: number;
+  /** Dungeon options, reused to generate each new floor. */
+  dungeonOpts: DungeonOptions;
   /** Monotonic id source for spawned entities (deterministic). */
   nextEntityId: number;
 }
@@ -136,17 +155,33 @@ export interface NewGameOptions {
   enemyCount?: number;
 }
 
+/** Deterministic seed for a floor's dungeon layout. */
+function floorSeed(seed: number, floor: number): number {
+  let h = Math.imul(seed ^ 0x85ebca6b, 2654435761);
+  h = Math.imul(h ^ floor, 2246822519);
+  h ^= h >>> 13;
+  return h >>> 0;
+}
+
+/** Deterministic seed for a room's reward roll (independent of the spawn seed). */
+function rewardSeed(seed: number, floor: number, roomId: RoomId): number {
+  let h = Math.imul(seed ^ 0xc2b2ae35, 2654435761);
+  h = Math.imul(h ^ floor, 2246822519);
+  h = Math.imul(h ^ roomId, 3266489917);
+  h ^= h >>> 13;
+  return h >>> 0;
+}
+
 /** Deterministic per-room seed so a room's contents are fixed regardless of path. */
-function roomSeed(seed: number, roomId: RoomId): number {
+function roomSeed(seed: number, floor: number, roomId: RoomId): number {
   let h = Math.imul(seed ^ 0x9e3779b9, 2654435761);
-  h = Math.imul(h ^ roomId, 2246822519);
+  h = Math.imul(h ^ floor, 2246822519);
+  h = Math.imul(h ^ roomId, 3266489917);
   h ^= h >>> 13;
   return h >>> 0;
 }
 
 export function createGame(seed: number, opts: NewGameOptions = {}): GameState {
-  const rng = new Rng(seed);
-  const dungeon = generateDungeon(rng, opts.dungeon ?? DEFAULT_DUNGEON);
   const player: Player = {
     pos: { x: ROOM_W / 2, y: ROOM_H / 2 },
     vel: { x: 0, y: 0 },
@@ -164,9 +199,9 @@ export function createGame(seed: number, opts: NewGameOptions = {}): GameState {
   };
   const state: GameState = {
     seed,
-    rng,
-    dungeon,
-    currentRoom: dungeon.startRoom,
+    rng: new Rng(seed),
+    dungeon: generateDungeon(new Rng(floorSeed(seed, 1)), opts.dungeon ?? DEFAULT_DUNGEON),
+    currentRoom: 0,
     grid: makeRoomGrid(),
     player,
     enemies: [],
@@ -177,15 +212,35 @@ export function createGame(seed: number, opts: NewGameOptions = {}): GameState {
     doorsOpen: true,
     status: 'playing',
     bossDefeated: false,
+    floor: 1,
+    dungeonOpts: opts.dungeon ?? DEFAULT_DUNGEON,
     nextEntityId: 1,
   };
-  for (const id of dungeon.rooms.keys()) {
+  // Floor 1 keeps the start-room enemy override (used by tests); later floors are safe.
+  buildFloor(state, 1, opts.enemyCount ?? 0);
+  return state;
+}
+
+/**
+ * Generates floor `floor`: a fresh dungeon, empty room runtimes, then enters the
+ * start room. The player (HP, items, stats) is preserved across floors.
+ */
+function buildFloor(state: GameState, floor: number, startEnemies: number): void {
+  state.floor = floor;
+  state.dungeon = generateDungeon(new Rng(floorSeed(state.seed, floor)), state.dungeonOpts);
+  state.roomRuntimes = new Map();
+  for (const id of state.dungeon.rooms.keys()) {
     state.roomRuntimes.set(id, { enemies: [], pickups: [], spawned: false });
   }
-  // The start room is populated up front (optionally forced, for tests).
-  populateRoom(state, dungeon.startRoom, opts.enemyCount ?? 0);
-  enterRoom(state, dungeon.startRoom);
-  return state;
+  state.bossDefeated = false;
+  state.projectiles = [];
+  populateRoom(state, state.dungeon.startRoom, startEnemies);
+  enterRoom(state, state.dungeon.startRoom);
+}
+
+/** Descends to the next floor, carrying the player's progression along. */
+export function descendToNextFloor(state: GameState): void {
+  buildFloor(state, state.floor + 1, 0);
 }
 
 /**
@@ -200,12 +255,14 @@ export function populateRoom(state: GameState, roomId: RoomId, forcedCount?: num
 
   const room = state.dungeon.rooms.get(roomId);
   if (!room) return;
-  const rng = new Rng(roomSeed(state.seed, roomId));
+  const rng = new Rng(roomSeed(state.seed, state.floor, roomId));
+  const tier = state.floor - 1; // 0 on floor 1
+  const enemyHp = BASE_ENEMY_HP + tier * ENEMY_HP_PER_FLOOR;
 
   if (forcedCount === undefined && room.type === 'boss') {
     rt.enemies.push(
       makeEnemy(state.nextEntityId++, BOSS_SPAWN, {
-        hp: 30,
+        hp: BOSS_HP_BASE + tier * BOSS_HP_PER_FLOOR,
         radius: 0.7,
         speed: 1.8,
         touchDamage: 2,
@@ -224,7 +281,7 @@ export function populateRoom(state: GameState, roomId: RoomId, forcedCount?: num
 
   let count: number;
   if (forcedCount !== undefined) count = forcedCount;
-  else if (room.type === 'normal') count = rng.range(2, 4);
+  else if (room.type === 'normal') count = rng.range(2, 4) + tier * ENEMIES_PER_FLOOR;
   else count = 0; // start, treasure, shop
 
   let placed = 0;
@@ -236,7 +293,7 @@ export function populateRoom(state: GameState, roomId: RoomId, forcedCount?: num
     const ty = rng.range(1, ROOM_H - 2);
     const pos: Vec2 = { x: tx + 0.5, y: ty + 0.5 };
     if (Math.hypot(pos.x - center.x, pos.y - center.y) < 3) continue;
-    rt.enemies.push(makeEnemy(state.nextEntityId++, pos));
+    rt.enemies.push(makeEnemy(state.nextEntityId++, pos, { hp: enemyHp }));
     placed++;
   }
 }
@@ -308,12 +365,18 @@ function stepPlayerMovement(state: GameState, input: InputState, dt: number): vo
   player.pos = moveBody(state.grid, player.pos, player.radius, player.vel.x * dt, player.vel.y * dt);
 }
 
-/** Collects any pickup the player is touching, applying its item immediately. */
+/** Collects pickups the player is touching: items apply immediately, hearts heal. */
 function stepPickups(state: GameState): void {
   const { player } = state;
   for (let i = state.pickups.length - 1; i >= 0; i--) {
     const pickup = state.pickups[i]!;
-    if (circlesOverlap(player.pos, player.radius, pickup.pos, pickup.radius)) {
+    if (!circlesOverlap(player.pos, player.radius, pickup.pos, pickup.radius)) continue;
+
+    if (pickup.kind === 'heart') {
+      if (player.hp >= player.maxHp) continue; // leave it on the ground when full
+      heal(player, pickup.heal);
+      state.pickups.splice(i, 1);
+    } else {
       const item = getItem(pickup.itemId);
       if (item) applyItem(player, item);
       state.pickups.splice(i, 1);
@@ -403,13 +466,29 @@ function stepRoomClear(state: GameState): void {
   // Beating the boss no longer wins instantly: it drops a teleporter and leaves
   // the floor open so the player can backtrack before choosing to finish.
   if (state.currentRoom === state.dungeon.bossRoom) state.bossDefeated = true;
+
+  // Combat rooms (not the boss) may drop a healing heart. The roll is a pure
+  // function of (seed, floor, roomId), so it fires at most once per room and is
+  // reproducible — no shared RNG consumed in tick().
+  if (room && room.type === 'normal') {
+    const rng = new Rng(rewardSeed(state.seed, state.floor, state.currentRoom));
+    if (rng.chance(HEART_DROP_CHANCE)) {
+      state.pickups.push(
+        makeHeart(state.nextEntityId++, { x: ROOM_W / 2, y: ROOM_H / 2 }, HEART_HEAL),
+      );
+    }
+  }
 }
 
-/** Once the boss is defeated, stepping on the teleporter (in the boss room) wins. */
+/**
+ * Once the boss is defeated, stepping on the teleporter descends to the next
+ * floor — or wins the run if this was the final floor.
+ */
 function stepTeleporter(state: GameState): void {
   if (!state.bossDefeated || state.currentRoom !== state.dungeon.bossRoom) return;
   if (circlesOverlap(state.player.pos, state.player.radius, TELEPORTER_POS, TELEPORTER_RADIUS)) {
-    state.status = 'won';
+    if (state.floor >= MAX_FLOORS) state.status = 'won';
+    else descendToNextFloor(state);
   }
 }
 
