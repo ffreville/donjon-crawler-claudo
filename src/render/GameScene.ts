@@ -37,10 +37,13 @@ export class GameScene extends Phaser.Scene {
   private state!: GameState;
   private player!: Phaser.GameObjects.Rectangle;
   private hud!: Phaser.GameObjects.Text;
+  private overlay!: Phaser.GameObjects.Text;
   private tiles!: Phaser.GameObjects.Group;
   /** Signature of the currently-drawn room, to know when to redraw tiles. */
   private roomKey = '';
   private accumulator = 0;
+  /** Seed of the current run; bumped on restart so each run differs. */
+  private seed = 2026;
 
   /** Currently held physical key codes. */
   private readonly held = new Set<string>();
@@ -53,18 +56,40 @@ export class GameScene extends Phaser.Scene {
   }
 
   create(): void {
-    this.state = createGame(2026);
     this.tiles = this.add.group();
+    this.startRun();
 
-    const p = this.state.player.pos;
     const size = this.state.player.radius * 2 * TILE;
+    const p = this.state.player.pos;
     this.player = this.add.rectangle(p.x * TILE, p.y * TILE, size, size, 0xffd166).setDepth(10);
 
     this.hud = this.add
       .text(8, 6, '', { fontFamily: 'monospace', fontSize: '16px', color: '#ffffff' })
       .setDepth(100);
 
+    this.overlay = this.add
+      .text(this.scale.width / 2, this.scale.height / 2, '', {
+        fontFamily: 'monospace',
+        fontSize: '22px',
+        color: '#ffffff',
+        align: 'center',
+      })
+      .setOrigin(0.5)
+      .setDepth(200)
+      .setVisible(false);
+
     this.bindInput();
+  }
+
+  /** Start a fresh run with the current seed and reset all view caches. */
+  private startRun(): void {
+    this.state = createGame(this.seed);
+    this.roomKey = '';
+    for (const s of this.enemySprites.values()) s.destroy();
+    this.enemySprites.clear();
+    for (const s of this.projectileSprites.values()) s.destroy();
+    this.projectileSprites.clear();
+    this.tiles.clear(true, true);
   }
 
   private bindInput(): void {
@@ -76,6 +101,13 @@ export class GameScene extends Phaser.Scene {
     });
     kb.on('keyup', (event: KeyboardEvent) => {
       this.held.delete(event.code);
+    });
+    // Restart with a new run when the current one is over.
+    kb.on('keydown-R', () => {
+      if (this.state.status !== 'playing') {
+        this.seed++;
+        this.startRun();
+      }
     });
     // Avoid stuck keys when the window loses focus (e.g. alt-tab).
     this.game.events.on(Phaser.Core.Events.BLUR, () => this.held.clear());
@@ -136,6 +168,14 @@ export class GameScene extends Phaser.Scene {
     this.hud.setText(
       `HP ${player.hp}/${player.maxHp}   room: ${type}${lock}   enemies ${this.state.enemies.length}`,
     );
+
+    if (this.state.status === 'dead') {
+      this.overlay.setText('GAME OVER\n\npress R to try again').setVisible(true);
+    } else if (this.state.status === 'won') {
+      this.overlay.setText('VICTORY\n\npress R for a new run').setVisible(true);
+    } else {
+      this.overlay.setVisible(false);
+    }
   }
 
   private syncEnemies(): void {

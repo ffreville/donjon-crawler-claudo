@@ -41,6 +41,9 @@ export const PLAYER_IFRAMES = 0.8;
 /** Distance from a door's opening at which the player transitions through it. */
 export const DOOR_TRIGGER = 0.7;
 
+/** Lifecycle of a single run. The simulation only advances while 'playing'. */
+export type RunStatus = 'playing' | 'dead' | 'won';
+
 export interface Player extends Combatant {
   pos: Vec2;
   vel: Vec2;
@@ -92,6 +95,8 @@ export interface GameState {
   doors: Door[];
   /** Whether the current room's doors are open (true when no enemies remain). */
   doorsOpen: boolean;
+  /** Run lifecycle: 'playing', or terminal 'dead' / 'won'. */
+  status: RunStatus;
   /** Monotonic id source for spawned entities (deterministic). */
   nextEntityId: number;
 }
@@ -136,6 +141,7 @@ export function createGame(seed: number, opts: NewGameOptions = {}): GameState {
     roomRuntimes: new Map(),
     doors: [],
     doorsOpen: true,
+    status: 'playing',
     nextEntityId: 1,
   };
   for (const id of dungeon.rooms.keys()) {
@@ -221,12 +227,20 @@ export function enterRoom(state: GameState, roomId: RoomId, fromDir?: Direction)
  * + dt always yields the same next state. No randomness is consumed here.
  */
 export function tick(state: GameState, input: InputState, dt: number): void {
+  if (state.status !== 'playing') return; // the run is over; freeze the world
   stepPlayerMovement(state, input, dt);
   stepFiring(state, input, dt);
   stepEnemies(state, dt);
   stepProjectiles(state, dt);
   stepContactDamage(state, dt);
-  stepRoomClear(state);
+  // Death is resolved BEFORE the boss-clear win, so a same-tick death takes
+  // precedence: you can't win from the grave. Keep this order.
+  if (isDead(state.player)) {
+    state.status = 'dead';
+    return;
+  }
+  stepRoomClear(state); // may set status to 'won'
+  if (state.status !== 'playing') return;
   stepDoors(state);
 }
 
@@ -320,6 +334,7 @@ function stepRoomClear(state: GameState): void {
   for (const d of state.doors) carveDoor(state.grid, d.dir);
   const room = state.dungeon.rooms.get(state.currentRoom);
   if (room) room.cleared = true;
+  if (state.currentRoom === state.dungeon.bossRoom) state.status = 'won';
 }
 
 /** Transition to a neighbor when the player reaches an open door. */
