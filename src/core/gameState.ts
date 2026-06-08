@@ -5,7 +5,15 @@ import {
   DEFAULT_DUNGEON,
   type DungeonOptions,
 } from './dungeon.js';
-import { makeEnemy, makeProjectile, type Enemy, type Projectile } from './entities.js';
+import {
+  makeEnemy,
+  makePickup,
+  makeProjectile,
+  type Enemy,
+  type Pickup,
+  type Projectile,
+} from './entities.js';
+import { applyItem, getItem, ITEM_POOL } from './items.js';
 import { aabbHitsWall, circlesOverlap, moveBody } from './physics.js';
 import { Rng } from './rng.js';
 import {
@@ -31,7 +39,7 @@ export const PLAYER_RADIUS = 0.4;
 export const PROJECTILE_SPEED = 12;
 /** Projectile lifetime, in seconds. */
 export const PROJECTILE_LIFE = 1.2;
-/** Damage dealt by a player projectile (will become item-driven later). */
+/** Base projectile damage; item modifiers add on top (see Player.tearDamage). */
 export const PLAYER_TEAR_DAMAGE = 3;
 /** Player shots per second. */
 export const PLAYER_FIRE_RATE = 3;
@@ -41,6 +49,14 @@ export const PLAYER_IFRAMES = 0.8;
 /** Distance from a door's opening at which the player transitions through it. */
 export const DOOR_TRIGGER = 0.7;
 
+/** Where the boss spawns (top-center) and where the player enters (bottom-center). */
+export const BOSS_SPAWN: Vec2 = { x: ROOM_W / 2, y: 2.5 };
+export const BOSS_ROOM_ENTRY: Vec2 = { x: ROOM_W / 2, y: ROOM_H - 1.5 };
+
+/** The victory teleporter that appears (where the boss stood) once it is defeated. */
+export const TELEPORTER_POS: Vec2 = { x: ROOM_W / 2, y: 2.5 };
+export const TELEPORTER_RADIUS = 0.5;
+
 /** Lifecycle of a single run. The simulation only advances while 'playing'. */
 export type RunStatus = 'playing' | 'dead' | 'won';
 
@@ -48,6 +64,14 @@ export interface Player extends Combatant {
   pos: Vec2;
   vel: Vec2;
   radius: number;
+  /** Movement speed in tiles/second (base + item modifiers). */
+  speed: number;
+  /** Projectile damage (base + item modifiers). */
+  tearDamage: number;
+  /** Shots per second (base + item modifiers). */
+  fireRate: number;
+  /** Ids of items the player has collected. */
+  items: string[];
   /** Seconds until the player can fire again. */
   fireCooldown: number;
   /** Seconds of remaining invulnerability. */
@@ -71,6 +95,7 @@ export const NO_INPUT: InputState = { moveX: 0, moveY: 0, aimX: 0, aimY: 0 };
 /** Cached, lazily-populated runtime state for a single room. */
 export interface RoomRuntime {
   enemies: Enemy[];
+  pickups: Pickup[];
   spawned: boolean;
 }
 
@@ -91,12 +116,16 @@ export interface GameState {
   player: Player;
   enemies: Enemy[];
   projectiles: Projectile[];
+  /** Item pickups in the current room (aliases the current room's runtime array). */
+  pickups: Pickup[];
   roomRuntimes: Map<RoomId, RoomRuntime>;
   doors: Door[];
   /** Whether the current room's doors are open (true when no enemies remain). */
   doorsOpen: boolean;
   /** Run lifecycle: 'playing', or terminal 'dead' / 'won'. */
   status: RunStatus;
+  /** Set once the boss is defeated; the victory teleporter then exists in the boss room. */
+  bossDefeated: boolean;
   /** Monotonic id source for spawned entities (deterministic). */
   nextEntityId: number;
 }
@@ -122,6 +151,10 @@ export function createGame(seed: number, opts: NewGameOptions = {}): GameState {
     pos: { x: ROOM_W / 2, y: ROOM_H / 2 },
     vel: { x: 0, y: 0 },
     radius: PLAYER_RADIUS,
+    speed: PLAYER_SPEED,
+    tearDamage: PLAYER_TEAR_DAMAGE,
+    fireRate: PLAYER_FIRE_RATE,
+    items: [],
     fireCooldown: 0,
     invuln: 0,
     hp: 6,
@@ -138,14 +171,16 @@ export function createGame(seed: number, opts: NewGameOptions = {}): GameState {
     player,
     enemies: [],
     projectiles: [],
+    pickups: [],
     roomRuntimes: new Map(),
     doors: [],
     doorsOpen: true,
     status: 'playing',
+    bossDefeated: false,
     nextEntityId: 1,
   };
   for (const id of dungeon.rooms.keys()) {
-    state.roomRuntimes.set(id, { enemies: [], spawned: false });
+    state.roomRuntimes.set(id, { enemies: [], pickups: [], spawned: false });
   }
   // The start room is populated up front (optionally forced, for tests).
   populateRoom(state, dungeon.startRoom, opts.enemyCount ?? 0);
@@ -169,7 +204,7 @@ export function populateRoom(state: GameState, roomId: RoomId, forcedCount?: num
 
   if (forcedCount === undefined && room.type === 'boss') {
     rt.enemies.push(
-      makeEnemy(state.nextEntityId++, { x: ROOM_W / 2, y: 2.5 }, {
+      makeEnemy(state.nextEntityId++, BOSS_SPAWN, {
         hp: 30,
         radius: 0.7,
         speed: 1.8,
@@ -179,12 +214,19 @@ export function populateRoom(state: GameState, roomId: RoomId, forcedCount?: num
     return;
   }
 
+  const center: Vec2 = { x: ROOM_W / 2, y: ROOM_H / 2 };
+
+  // A treasure room offers one item to collect, chosen deterministically.
+  if (forcedCount === undefined && room.type === 'treasure' && ITEM_POOL.length > 0) {
+    const itemId = rng.pick(ITEM_POOL);
+    rt.pickups.push(makePickup(state.nextEntityId++, center, itemId));
+  }
+
   let count: number;
   if (forcedCount !== undefined) count = forcedCount;
   else if (room.type === 'normal') count = rng.range(2, 4);
   else count = 0; // start, treasure, shop
 
-  const center: Vec2 = { x: ROOM_W / 2, y: ROOM_H / 2 };
   let placed = 0;
   let attempts = 0;
   const maxAttempts = count * 50;
@@ -207,8 +249,11 @@ export function populateRoom(state: GameState, roomId: RoomId, forcedCount?: num
 export function enterRoom(state: GameState, roomId: RoomId, fromDir?: Direction): void {
   populateRoom(state, roomId);
   const rt = state.roomRuntimes.get(roomId);
+  if (!rt) throw new Error(`enterRoom: no runtime for room ${roomId}`);
   state.currentRoom = roomId;
-  state.enemies = rt ? rt.enemies : [];
+  // Alias the runtime arrays directly so in-place edits (splice) stay in sync.
+  state.enemies = rt.enemies;
+  state.pickups = rt.pickups;
   state.projectiles = [];
   state.doors = computeDoors(state.dungeon, roomId);
   state.grid = makeRoomGrid();
@@ -217,9 +262,15 @@ export function enterRoom(state: GameState, roomId: RoomId, fromDir?: Direction)
     for (const d of state.doors) carveDoor(state.grid, d.dir);
   }
   state.player.vel = { x: 0, y: 0 };
-  state.player.pos = fromDir
-    ? entryPosition(state.grid, opposite(fromDir))
-    : { x: state.grid.width / 2, y: state.grid.height / 2 };
+  if (roomId === state.dungeon.bossRoom) {
+    // Always enter the boss arena far from the boss, whatever door was used,
+    // so the player isn't hit the instant they arrive.
+    state.player.pos = { x: BOSS_ROOM_ENTRY.x, y: BOSS_ROOM_ENTRY.y };
+  } else {
+    state.player.pos = fromDir
+      ? entryPosition(state.grid, opposite(fromDir))
+      : { x: state.grid.width / 2, y: state.grid.height / 2 };
+  }
 }
 
 /**
@@ -229,6 +280,7 @@ export function enterRoom(state: GameState, roomId: RoomId, fromDir?: Direction)
 export function tick(state: GameState, input: InputState, dt: number): void {
   if (state.status !== 'playing') return; // the run is over; freeze the world
   stepPlayerMovement(state, input, dt);
+  stepPickups(state);
   stepFiring(state, input, dt);
   stepEnemies(state, dt);
   stepProjectiles(state, dt);
@@ -239,7 +291,8 @@ export function tick(state: GameState, input: InputState, dt: number): void {
     state.status = 'dead';
     return;
   }
-  stepRoomClear(state); // may set status to 'won'
+  stepRoomClear(state); // opens doors; flags bossDefeated in the boss room
+  stepTeleporter(state); // win by reaching the teleporter after the boss falls
   if (state.status !== 'playing') return;
   stepDoors(state);
 }
@@ -248,11 +301,24 @@ function stepPlayerMovement(state: GameState, input: InputState, dt: number): vo
   const { player } = state;
   const len = Math.hypot(input.moveX, input.moveY);
   if (len > 0) {
-    player.vel = { x: (input.moveX / len) * PLAYER_SPEED, y: (input.moveY / len) * PLAYER_SPEED };
+    player.vel = { x: (input.moveX / len) * player.speed, y: (input.moveY / len) * player.speed };
   } else {
     player.vel = { x: 0, y: 0 };
   }
   player.pos = moveBody(state.grid, player.pos, player.radius, player.vel.x * dt, player.vel.y * dt);
+}
+
+/** Collects any pickup the player is touching, applying its item immediately. */
+function stepPickups(state: GameState): void {
+  const { player } = state;
+  for (let i = state.pickups.length - 1; i >= 0; i--) {
+    const pickup = state.pickups[i]!;
+    if (circlesOverlap(player.pos, player.radius, pickup.pos, pickup.radius)) {
+      const item = getItem(pickup.itemId);
+      if (item) applyItem(player, item);
+      state.pickups.splice(i, 1);
+    }
+  }
 }
 
 function stepFiring(state: GameState, input: InputState, dt: number): void {
@@ -264,9 +330,9 @@ function stepFiring(state: GameState, input: InputState, dt: number): void {
   if (len > 0 && player.fireCooldown <= 0) {
     const vel: Vec2 = { x: (ax / len) * PROJECTILE_SPEED, y: (ay / len) * PROJECTILE_SPEED };
     state.projectiles.push(
-      makeProjectile(state.nextEntityId++, player.pos, vel, PLAYER_TEAR_DAMAGE, PROJECTILE_LIFE, 'player'),
+      makeProjectile(state.nextEntityId++, player.pos, vel, player.tearDamage, PROJECTILE_LIFE, 'player'),
     );
-    player.fireCooldown = 1 / PLAYER_FIRE_RATE;
+    player.fireCooldown = 1 / player.fireRate;
   }
 }
 
@@ -334,7 +400,17 @@ function stepRoomClear(state: GameState): void {
   for (const d of state.doors) carveDoor(state.grid, d.dir);
   const room = state.dungeon.rooms.get(state.currentRoom);
   if (room) room.cleared = true;
-  if (state.currentRoom === state.dungeon.bossRoom) state.status = 'won';
+  // Beating the boss no longer wins instantly: it drops a teleporter and leaves
+  // the floor open so the player can backtrack before choosing to finish.
+  if (state.currentRoom === state.dungeon.bossRoom) state.bossDefeated = true;
+}
+
+/** Once the boss is defeated, stepping on the teleporter (in the boss room) wins. */
+function stepTeleporter(state: GameState): void {
+  if (!state.bossDefeated || state.currentRoom !== state.dungeon.bossRoom) return;
+  if (circlesOverlap(state.player.pos, state.player.radius, TELEPORTER_POS, TELEPORTER_RADIUS)) {
+    state.status = 'won';
+  }
 }
 
 /** Transition to a neighbor when the player reaches an open door. */

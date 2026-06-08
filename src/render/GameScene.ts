@@ -3,6 +3,8 @@ import {
   createGame,
   FIXED_DT,
   isWall,
+  TELEPORTER_POS,
+  TELEPORTER_RADIUS,
   tick,
   type GameState,
   type InputState,
@@ -50,6 +52,8 @@ export class GameScene extends Phaser.Scene {
 
   private enemySprites = new Map<number, Phaser.GameObjects.Rectangle>();
   private projectileSprites = new Map<number, Phaser.GameObjects.Arc>();
+  private pickupSprites = new Map<number, Phaser.GameObjects.Arc>();
+  private teleporter?: Phaser.GameObjects.Arc;
 
   constructor() {
     super('GameScene');
@@ -89,6 +93,10 @@ export class GameScene extends Phaser.Scene {
     this.enemySprites.clear();
     for (const s of this.projectileSprites.values()) s.destroy();
     this.projectileSprites.clear();
+    for (const s of this.pickupSprites.values()) s.destroy();
+    this.pickupSprites.clear();
+    this.teleporter?.destroy();
+    this.teleporter = undefined;
     this.tiles.clear(true, true);
   }
 
@@ -162,11 +170,14 @@ export class GameScene extends Phaser.Scene {
 
     this.syncEnemies();
     this.syncProjectiles();
+    this.syncPickups();
+    this.syncTeleporter();
 
     const type = dungeon.rooms.get(currentRoom)?.type ?? '?';
     const lock = doorsOpen ? '' : '  [LOCKED]';
+    const items = player.items.length > 0 ? `   items: ${player.items.join(', ')}` : '';
     this.hud.setText(
-      `HP ${player.hp}/${player.maxHp}   room: ${type}${lock}   enemies ${this.state.enemies.length}`,
+      `HP ${player.hp}/${player.maxHp}   room: ${type}${lock}   enemies ${this.state.enemies.length}${items}`,
     );
 
     if (this.state.status === 'dead') {
@@ -205,6 +216,36 @@ export class GameScene extends Phaser.Scene {
       sprite.setPosition(p.pos.x * TILE, p.pos.y * TILE);
     }
     this.cull(this.projectileSprites, live);
+  }
+
+  private syncPickups(): void {
+    const live = new Set<number>();
+    for (const pk of this.state.pickups) {
+      live.add(pk.id);
+      let sprite = this.pickupSprites.get(pk.id);
+      if (!sprite) {
+        sprite = this.add.circle(0, 0, pk.radius * TILE, 0x4ad6c8).setDepth(6);
+        this.pickupSprites.set(pk.id, sprite);
+      }
+      sprite.setPosition(pk.pos.x * TILE, pk.pos.y * TILE);
+    }
+    this.cull(this.pickupSprites, live);
+  }
+
+  private syncTeleporter(): void {
+    const show =
+      this.state.bossDefeated && this.state.currentRoom === this.state.dungeon.bossRoom;
+    if (show) {
+      if (!this.teleporter) {
+        this.teleporter = this.add
+          .circle(TELEPORTER_POS.x * TILE, TELEPORTER_POS.y * TILE, TELEPORTER_RADIUS * TILE, 0xb14aff)
+          .setStrokeStyle(2, 0xe7c6ff)
+          .setDepth(7);
+      }
+      this.teleporter.setVisible(true);
+    } else {
+      this.teleporter?.setVisible(false);
+    }
   }
 
   private cull<T extends Phaser.GameObjects.GameObject>(

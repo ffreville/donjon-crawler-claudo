@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { makeEnemy } from './entities.js';
-import { createGame, enterRoom, FIXED_DT, NO_INPUT, tick } from './gameState.js';
+import { createGame, enterRoom, FIXED_DT, NO_INPUT, tick, TELEPORTER_POS } from './gameState.js';
 
 describe('run lifecycle', () => {
   it('ends in death when the player reaches 0 HP', () => {
@@ -25,18 +25,38 @@ describe('run lifecycle', () => {
     expect(s.projectiles).toHaveLength(0); // no firing
   });
 
-  it('is won when the boss room is cleared', () => {
+  it('spawns the player far from the boss on entry', () => {
     const s = createGame(1);
     enterRoom(s, s.dungeon.bossRoom);
-    expect(s.currentRoom).toBe(s.dungeon.bossRoom);
+    const boss = s.enemies[0]!;
+    const dist = Math.hypot(s.player.pos.x - boss.pos.x, s.player.pos.y - boss.pos.y);
+    // Comfortably clear of contact range (player.radius + boss.radius ≈ 1.1).
+    expect(dist).toBeGreaterThan(3);
+  });
+
+  it('drops a teleporter when the boss is defeated, without winning instantly', () => {
+    const s = createGame(1);
+    enterRoom(s, s.dungeon.bossRoom);
     expect(s.enemies.length).toBeGreaterThan(0); // the boss
     expect(s.doorsOpen).toBe(false);
-    expect(s.status).toBe('playing');
 
     s.enemies.length = 0; // defeat the boss
     tick(s, NO_INPUT, FIXED_DT);
+    expect(s.status).toBe('playing'); // not an instant win
+    expect(s.bossDefeated).toBe(true);
+    expect(s.doorsOpen).toBe(true); // floor is open for backtracking
+  });
+
+  it('wins only once the player reaches the teleporter', () => {
+    const s = createGame(1);
+    enterRoom(s, s.dungeon.bossRoom);
+    s.enemies.length = 0;
+    tick(s, NO_INPUT, FIXED_DT);
+    expect(s.status).toBe('playing');
+
+    s.player.pos = { x: TELEPORTER_POS.x, y: TELEPORTER_POS.y };
+    tick(s, NO_INPUT, FIXED_DT);
     expect(s.status).toBe('won');
-    expect(s.doorsOpen).toBe(true);
   });
 
   it('does not advance the simulation when not playing', () => {

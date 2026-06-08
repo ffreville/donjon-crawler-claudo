@@ -25,6 +25,18 @@ export interface Projectile {
   source: ProjectileSource;
 }
 
+/** A collectible item lying in a room. Picked up on contact with the player. */
+export interface Pickup {
+  id: number;
+  pos: Vec2;
+  itemId: string;
+  radius: number;
+}
+
+export function makePickup(id: number, pos: Vec2, itemId: string, radius = 0.35): Pickup {
+  return { id, pos: { x: pos.x, y: pos.y }, itemId, radius };
+}
+
 export interface EnemyStats {
   hp?: number;
   speed?: number;
