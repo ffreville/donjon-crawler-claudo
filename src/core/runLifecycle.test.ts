@@ -15,6 +15,7 @@ describe('run lifecycle', () => {
     const s = createGame(1, { enemyCount: 1 }); // locked room
     s.enemies.length = 0;
     s.enemies.push(makeEnemy(99, { x: s.player.pos.x, y: s.player.pos.y })); // on the player
+    s.graceTimer = 0; // skip the entry grace; we're testing death
     s.player.hp = 1;
     tick(s, NO_INPUT, FIXED_DT);
     expect(s.player.hp).toBe(0);
@@ -25,6 +26,7 @@ describe('run lifecycle', () => {
     const s = createGame(1, { enemyCount: 1 });
     s.enemies.length = 0;
     s.enemies.push(makeEnemy(99, { x: s.player.pos.x, y: s.player.pos.y }));
+    s.graceTimer = 0; // skip the entry grace; we're testing the post-death freeze
     s.player.hp = 1;
     tick(s, NO_INPUT, FIXED_DT); // player dies
     const frozen = { ...s.enemies[0]!.pos };

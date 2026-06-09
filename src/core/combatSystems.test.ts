@@ -58,6 +58,7 @@ describe('enemies', () => {
   it('chase the player', () => {
     const s = createGame(1, { enemyCount: 0 });
     s.enemies.push(makeEnemy(99, { x: 10, y: 4.5 }));
+    s.graceTimer = 0; // skip the entry grace; we're testing chase
     const startX = s.enemies[0]!.pos.x;
     runTicks(s, idle, 30); // player stays put at (7.5, 4.5)
     expect(s.enemies[0]!.pos.x).toBeLessThan(startX);
@@ -86,6 +87,7 @@ describe('contact damage', () => {
   it('damages the player on contact, then grants i-frames', () => {
     const s = createGame(1, { enemyCount: 0 });
     s.enemies.push(makeEnemy(99, { x: 7.5, y: 4.5 })); // overlapping the player
+    s.graceTimer = 0; // skip the entry grace; we're testing contact damage
     const hp0 = s.player.hp;
     tick(s, idle, FIXED_DT);
     expect(s.player.hp).toBe(hp0 - 1);

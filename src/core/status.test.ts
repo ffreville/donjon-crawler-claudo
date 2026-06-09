@@ -84,6 +84,7 @@ describe('slow', () => {
       const e = makeEnemy(9, { x: 12, y: 4.5 }, { kind: 'chaser' });
       if (slow) applyStatuses(e, [{ kind: 'slow', duration: 5, magnitude: 0.5 }]);
       s.enemies.push(e);
+      s.graceTimer = 0; // skip entry grace; we're testing movement
       const x0 = e.pos.x;
       for (let i = 0; i < 30; i++) tick(s, NO_INPUT, FIXED_DT);
       return x0 - e.pos.x; // distance moved toward the player (at x=7.5)

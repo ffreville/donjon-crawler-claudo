@@ -26,6 +26,7 @@ const ENEMY_COLORS: Record<EnemyKind, number> = {
   swarmer: 0xff9f43,
   shooter: 0x5b8cff,
   tank: 0x9b6b3a,
+  boss: 0xd6409f,
 };
 
 /** Pickup fill color per kind. */
@@ -88,6 +89,12 @@ export class GameScene extends Phaser.Scene {
   private pickupSprites = new Map<number, Phaser.GameObjects.Arc>();
   private priceLabels = new Map<number, Phaser.GameObjects.Text>();
   private teleporter?: Phaser.GameObjects.Arc;
+  private bossBarBg?: Phaser.GameObjects.Rectangle;
+  private bossBarFill?: Phaser.GameObjects.Rectangle;
+  /** Last-seen HP per enemy id, to detect hits for damage numbers / flashes. */
+  private enemyHp = new Map<number, number>();
+  private prevPlayerHp = 0;
+  private hurtFlash!: Phaser.GameObjects.Rectangle;
 
   constructor() {
     super('GameScene');
@@ -109,6 +116,13 @@ export class GameScene extends Phaser.Scene {
     const size = this.state.player.radius * 2 * TILE;
     const p = this.state.player.pos;
     this.player = this.add.rectangle(p.x * TILE, p.y * TILE, size, size, 0xffd166).setDepth(10);
+
+    // Red screen flash when the player is hurt (over the play area only).
+    this.hurtFlash = this.add
+      .rectangle(0, 0, ROOM_W * TILE, this.scale.height, 0xff0000)
+      .setOrigin(0)
+      .setDepth(95)
+      .setAlpha(0);
 
     this.hud = this.add
       .text(8, 6, '', { fontFamily: 'monospace', fontSize: '16px', color: '#ffffff' })
@@ -154,6 +168,9 @@ export class GameScene extends Phaser.Scene {
     this.roomKey = '';
     this.minimapKey = '';
     this.minimap?.clear(true, true);
+    this.enemyHp.clear();
+    this.prevPlayerHp = this.state.player.hp;
+    this.hurtFlash?.setAlpha(0);
     this.held.clear();
     this.accumulator = 0;
     this.endShown = false;
@@ -169,6 +186,10 @@ export class GameScene extends Phaser.Scene {
     this.priceLabels.clear();
     this.teleporter?.destroy();
     this.teleporter = undefined;
+    this.bossBarBg?.destroy();
+    this.bossBarBg = undefined;
+    this.bossBarFill?.destroy();
+    this.bossBarFill = undefined;
     this.tiles.clear(true, true);
   }
 
@@ -318,10 +339,19 @@ export class GameScene extends Phaser.Scene {
     this.player.setPosition(player.pos.x * TILE, player.pos.y * TILE);
     this.player.setAlpha(player.invuln > 0 ? 0.5 : 1);
 
+    // Player-hit feedback: screen shake + red flash when HP drops.
+    if (player.hp < this.prevPlayerHp) {
+      this.cameras.main.shake(120, 0.008);
+      this.hurtFlash.setAlpha(0.35);
+      this.tweens.add({ targets: this.hurtFlash, alpha: 0, duration: 250 });
+    }
+    this.prevPlayerHp = player.hp;
+
     this.syncEnemies();
     this.syncProjectiles();
     this.syncPickups();
     this.syncTeleporter();
+    this.syncBossBar();
     this.updateItemTooltip();
     this.updateMinimap();
 
@@ -342,6 +372,7 @@ export class GameScene extends Phaser.Scene {
         `DMG   ${num(player.tearDamage)}`,
         `RATE  ${num(player.fireRate)}/s`,
         `SPEED ${num(player.speed)}`,
+        `SHOTS ${player.shotCount}${player.piercing ? ' pierce' : ''}${player.homing ? ' homing' : ''}`,
         `FLOOR ${this.state.floor}`,
         '',
         'ITEMS',
@@ -367,6 +398,21 @@ export class GameScene extends Phaser.Scene {
         this.enemySprites.set(e.id, sprite);
       }
       sprite.setPosition(e.pos.x * TILE, e.pos.y * TILE);
+
+      // Hit feedback: a chunk of damage (>=1) spawns a floating number + white flash.
+      const prev = this.enemyHp.get(e.id);
+      if (prev !== undefined && e.hp < prev) {
+        const dmg = Math.round(prev - e.hp);
+        if (dmg >= 1) {
+          this.spawnDamageNumber(e.pos.x * TILE, e.pos.y * TILE, dmg);
+          sprite.setFillStyle(0xffffff);
+          this.time.delayedCall(60, () => {
+            if (sprite.active) sprite.setFillStyle(ENEMY_COLORS[e.kind]);
+          });
+        }
+      }
+      this.enemyHp.set(e.id, e.hp);
+
       // Outline shows active status: burning (orange) takes visual priority over slowed (cyan).
       const burning = e.effects.some((fx) => fx.kind === 'burn');
       const slowed = e.effects.some((fx) => fx.kind === 'slow');
@@ -375,6 +421,28 @@ export class GameScene extends Phaser.Scene {
       else sprite.setStrokeStyle(0);
     }
     this.cull(this.enemySprites, live);
+    for (const id of this.enemyHp.keys()) if (!live.has(id)) this.enemyHp.delete(id);
+  }
+
+  /** A small damage number that floats up and fades. */
+  private spawnDamageNumber(px: number, py: number, dmg: number): void {
+    const label = this.add
+      .text(px, py - 8, `${dmg}`, {
+        fontFamily: 'monospace',
+        fontSize: '14px',
+        color: '#ffe066',
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5)
+      .setDepth(120);
+    this.tweens.add({
+      targets: label,
+      y: py - 32,
+      alpha: 0,
+      duration: 480,
+      ease: 'Quad.easeOut',
+      onComplete: () => label.destroy(),
+    });
   }
 
   private syncProjectiles(): void {
@@ -501,6 +569,30 @@ export class GameScene extends Phaser.Scene {
       if (room.id === this.state.currentRoom) r.setStrokeStyle(2, 0xffffff);
       this.minimap.add(r);
     }
+  }
+
+  /** Boss HP bar across the top of the play area while a boss is alive. */
+  private syncBossBar(): void {
+    const boss = this.state.enemies.find((e) => e.kind === 'boss');
+    if (!boss) {
+      this.bossBarBg?.setVisible(false);
+      this.bossBarFill?.setVisible(false);
+      return;
+    }
+    const w = 320;
+    const h = 10;
+    const cx = (ROOM_W * TILE) / 2;
+    const left = cx - w / 2;
+    const y = 20;
+    if (!this.bossBarBg) {
+      this.bossBarBg = this.add.rectangle(cx, y, w, h, 0x3a0d1e).setDepth(110);
+    }
+    if (!this.bossBarFill) {
+      this.bossBarFill = this.add.rectangle(left, y, w, h, 0xe5484d).setOrigin(0, 0.5).setDepth(111);
+    }
+    const ratio = Math.max(0, boss.hp / boss.maxHp);
+    this.bossBarBg.setVisible(true);
+    this.bossBarFill.setVisible(true).setPosition(left, y).setDisplaySize(w * ratio, h);
   }
 
   private syncTeleporter(): void {

@@ -214,6 +214,8 @@ export function simulateEncounter(seed: number, opts: EncounterOptions): Encount
     const item = getItem(id);
     if (item) applyItem(state.player, item);
   }
+  // Measure steady-state combat, not the entry grace window.
+  state.graceTimer = 0;
   const startHp = state.player.hp;
 
   let ticks = 0;

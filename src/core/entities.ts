@@ -7,7 +7,7 @@ import type { Combatant, Vec2 } from './types.js';
  * - shooter: keeps its distance and fires projectiles
  * - tank: slow, high HP, hits hard
  */
-export type EnemyKind = 'chaser' | 'swarmer' | 'shooter' | 'tank';
+export type EnemyKind = 'chaser' | 'swarmer' | 'shooter' | 'tank' | 'boss';
 
 /** A hostile entity. Behaviour is driven by `kind`. */
 export interface Enemy extends Combatant {
@@ -24,6 +24,8 @@ export interface Enemy extends Combatant {
   fireCooldown: number;
   /** Active status effects (burn, slow, ...). */
   effects: StatusEffect[];
+  /** Decaying recoil velocity from being hit (tiles/second). */
+  knockback: Vec2;
 }
 
 export type ProjectileSource = 'player' | 'enemy';
@@ -57,6 +59,12 @@ export interface Projectile {
   source: ProjectileSource;
   /** Statuses applied to the target on hit (player tears only). */
   applies: StatusSpec[];
+  /** Passes through enemies instead of being consumed on first hit. */
+  piercing: boolean;
+  /** Curves toward the nearest enemy each tick. */
+  homing: boolean;
+  /** Enemy ids already damaged by this projectile (so a piercing tear hits each once). */
+  hits: number[];
 }
 
 export type PickupKind = 'item' | 'heart' | 'coin';
@@ -127,6 +135,7 @@ export const ENEMY_ARCHETYPES: Record<EnemyKind, Required<Omit<EnemyStats, 'kind
   swarmer: { hp: 3, speed: 4.2, radius: 0.28, touchDamage: 1, attack: 0, defense: 0 },
   shooter: { hp: 5, speed: 1.8, radius: 0.4, touchDamage: 1, attack: 0, defense: 0 },
   tank: { hp: 14, speed: 1.2, radius: 0.6, touchDamage: 2, attack: 0, defense: 0 },
+  boss: { hp: 30, speed: 1.5, radius: 0.7, touchDamage: 2, attack: 0, defense: 0 },
 };
 
 export function makeEnemy(id: number, pos: Vec2, stats: EnemyStats = {}): Enemy {
@@ -143,6 +152,7 @@ export function makeEnemy(id: number, pos: Vec2, stats: EnemyStats = {}): Enemy 
     touchDamage: stats.touchDamage ?? base.touchDamage,
     fireCooldown: 0,
     effects: [],
+    knockback: { x: 0, y: 0 },
     hp,
     maxHp: hp,
     attack: stats.attack ?? base.attack,
@@ -158,16 +168,19 @@ export function makeProjectile(
   life: number,
   source: ProjectileSource,
   applies: StatusSpec[] = [],
-  radius = 0.15,
+  opts: { piercing?: boolean; homing?: boolean; radius?: number } = {},
 ): Projectile {
   return {
     id,
     pos: { x: pos.x, y: pos.y },
     vel: { x: vel.x, y: vel.y },
-    radius,
+    radius: opts.radius ?? 0.15,
     damage,
     life,
     source,
     applies,
+    piercing: opts.piercing ?? false,
+    homing: opts.homing ?? false,
+    hits: [],
   };
 }

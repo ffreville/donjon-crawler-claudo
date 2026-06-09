@@ -55,6 +55,13 @@ export const PLAYER_IFRAMES = 0.8;
 /** Distance from a door's opening at which the player transitions through it. */
 export const DOOR_TRIGGER = 0.7;
 
+/** Seconds after entering a room before enemies start moving/attacking. */
+export const GRACE_PERIOD = 0.5;
+
+/** Recoil impulse (tiles/s) applied to an enemy hit by a player tear, and its decay rate (/s). */
+export const KNOCKBACK_SPEED = 12;
+const KNOCKBACK_FRICTION = 14;
+
 /** Where the boss spawns (top-center) and where the player enters (bottom-center). */
 export const BOSS_SPAWN: Vec2 = { x: ROOM_W / 2, y: 2.5 };
 export const BOSS_ROOM_ENTRY: Vec2 = { x: ROOM_W / 2, y: ROOM_H - 1.5 };
@@ -88,8 +95,18 @@ export const ENEMY_FIRE_INTERVAL = 1.6;
 const SHOOTER_RANGE = 5;
 const SHOOTER_FIRE_RANGE = 8;
 
+/** Boss attack tuning. Interval shortens as phases escalate (see stepBoss). */
+const BOSS_SHOT_SPEED = 6;
+const BOSS_SHOT_DAMAGE = 1;
+const BOSS_SHOT_LIFE = 3;
+
 /** Synergy: an enemy that is both burning and slowed takes extra burn damage. */
 export const BURN_SLOW_SYNERGY = 1.5;
+
+/** Angle (radians) between adjacent tears when multishot is active. */
+export const MULTISHOT_SPREAD = 0.26;
+/** Max turn rate (radians/second) of a homing tear. */
+export const HOMING_TURN_RATE = 7;
 
 /** Lifecycle of a single run. The simulation only advances while 'playing'. */
 export type RunStatus = 'playing' | 'dead' | 'won';
@@ -108,6 +125,12 @@ export interface Player extends Combatant {
   items: string[];
   /** Statuses the player's tears apply on hit (from items). */
   tearEffects: StatusSpec[];
+  /** Number of tears fired per shot (multishot). */
+  shotCount: number;
+  /** Tears pass through enemies instead of being consumed on first hit. */
+  piercing: boolean;
+  /** Tears curve toward the nearest enemy. */
+  homing: boolean;
   /** Currency for the shop. */
   coins: number;
   /** Seconds until the player can fire again. */
@@ -164,6 +187,8 @@ export interface GameState {
   status: RunStatus;
   /** Set once the boss is defeated; the victory teleporter then exists in the boss room. */
   bossDefeated: boolean;
+  /** Seconds of remaining entry grace (enemies frozen, no contact damage). */
+  graceTimer: number;
   /** Current floor number, starting at 1. */
   floor: number;
   /** Dungeon options, reused to generate each new floor. */
@@ -214,6 +239,9 @@ export function createGame(seed: number, opts: NewGameOptions = {}): GameState {
     fireRate: PLAYER_FIRE_RATE,
     items: [],
     tearEffects: [],
+    shotCount: 1,
+    piercing: false,
+    homing: false,
     coins: 0,
     fireCooldown: 0,
     invuln: 0,
@@ -237,6 +265,7 @@ export function createGame(seed: number, opts: NewGameOptions = {}): GameState {
     doorsOpen: true,
     status: 'playing',
     bossDefeated: false,
+    graceTimer: 0,
     floor: 1,
     dungeonOpts: opts.dungeon ?? DEFAULT_DUNGEON,
     nextEntityId: 1,
@@ -286,10 +315,8 @@ export function populateRoom(state: GameState, roomId: RoomId, forcedCount?: num
   if (forcedCount === undefined && room.type === 'boss') {
     rt.enemies.push(
       makeEnemy(state.nextEntityId++, BOSS_SPAWN, {
+        kind: 'boss',
         hp: BOSS_HP_BASE + tier * BOSS_HP_PER_FLOOR,
-        radius: 0.7,
-        speed: 1.8,
-        touchDamage: 2,
       }),
     );
     return;
@@ -373,6 +400,7 @@ export function enterRoom(state: GameState, roomId: RoomId, fromDir?: Direction)
   if (state.doorsOpen) {
     for (const d of state.doors) carveDoor(state.grid, d.dir);
   }
+  state.graceTimer = GRACE_PERIOD; // brief reprieve so the player isn't hit on arrival
   state.player.vel = { x: 0, y: 0 };
   if (roomId === state.dungeon.bossRoom) {
     // Always enter the boss arena far from the boss, whatever door was used,
@@ -391,13 +419,18 @@ export function enterRoom(state: GameState, roomId: RoomId, fromDir?: Direction)
  */
 export function tick(state: GameState, input: InputState, dt: number): void {
   if (state.status !== 'playing') return; // the run is over; freeze the world
+  state.graceTimer = Math.max(0, state.graceTimer - dt);
+  // During the entry grace window enemies hold still and deal no damage, so the
+  // player isn't hit the instant they walk in. The player can still move/shoot.
+  const enemiesActive = state.graceTimer <= 0;
   stepPlayerMovement(state, input, dt);
   stepPickups(state);
   stepFiring(state, input, dt);
-  stepEnemies(state, dt);
+  // Enemies always recoil from hits (knockback), but only chase/attack once grace ends.
+  stepEnemies(state, dt, enemiesActive);
   stepProjectiles(state, dt);
   stepStatuses(state, dt);
-  stepContactDamage(state, dt);
+  if (enemiesActive) stepContactDamage(state, dt);
   // Death is resolved BEFORE the boss-clear win, so a same-tick death takes
   // precedence: you can't win from the grave. Keep this order.
   if (isDead(state.player)) {
@@ -454,23 +487,29 @@ function stepFiring(state: GameState, input: InputState, dt: number): void {
   const ay = input.aimY ?? 0;
   const len = Math.hypot(ax, ay);
   if (len > 0 && player.fireCooldown <= 0) {
-    const vel: Vec2 = { x: (ax / len) * PROJECTILE_SPEED, y: (ay / len) * PROJECTILE_SPEED };
-    state.projectiles.push(
-      makeProjectile(
-        state.nextEntityId++,
-        player.pos,
-        vel,
-        player.tearDamage,
-        PROJECTILE_LIFE,
-        'player',
-        [...player.tearEffects],
-      ),
-    );
+    const base = Math.atan2(ay, ax);
+    const n = Math.max(1, player.shotCount);
+    for (let i = 0; i < n; i++) {
+      const angle = base + (i - (n - 1) / 2) * MULTISHOT_SPREAD;
+      const vel: Vec2 = { x: Math.cos(angle) * PROJECTILE_SPEED, y: Math.sin(angle) * PROJECTILE_SPEED };
+      state.projectiles.push(
+        makeProjectile(
+          state.nextEntityId++,
+          player.pos,
+          vel,
+          player.tearDamage,
+          PROJECTILE_LIFE,
+          'player',
+          [...player.tearEffects],
+          { piercing: player.piercing, homing: player.homing },
+        ),
+      );
+    }
     player.fireCooldown = 1 / player.fireRate;
   }
 }
 
-function stepEnemies(state: GameState, dt: number): void {
+function stepEnemies(state: GameState, dt: number, active: boolean): void {
   const { player, grid } = state;
   for (const enemy of state.enemies) {
     const dx = player.pos.x - enemy.pos.x;
@@ -482,7 +521,10 @@ function stepEnemies(state: GameState, dt: number): void {
 
     let vx = 0;
     let vy = 0;
-    if (enemy.kind === 'shooter') {
+    if (!active) {
+      // During the entry grace the enemy holds still (AI/attacks suspended),
+      // but it still recoils from any hits below.
+    } else if (enemy.kind === 'shooter') {
       // Hold a standoff distance: retreat if too close, approach if too far.
       if (dist < SHOOTER_RANGE - 0.5) {
         vx = -ux * speed;
@@ -505,6 +547,11 @@ function stepEnemies(state: GameState, dt: number): void {
         );
         enemy.fireCooldown = ENEMY_FIRE_INTERVAL;
       }
+    } else if (enemy.kind === 'boss') {
+      // Slow advance toward the player; the threat is the bullet patterns.
+      vx = ux * speed * 0.6;
+      vy = uy * speed * 0.6;
+      stepBossAttacks(state, enemy, ux, uy, dt);
     } else {
       // chaser / swarmer / tank: walk straight at the player.
       vx = ux * speed;
@@ -512,7 +559,78 @@ function stepEnemies(state: GameState, dt: number): void {
     }
 
     enemy.vel = { x: vx, y: vy };
-    enemy.pos = moveBody(grid, enemy.pos, enemy.radius, vx * dt, vy * dt);
+    // Apply movement plus any recoil, then let the recoil decay. Recoil works
+    // even during grace, so shooting a freshly-entered enemy still shoves it.
+    // NOTE: (aiVel + knockback) must stay under 1 tile/tick for moveBody's
+    // single-tile collision assumption. Today ≈ (4.2 + 12)/60 ≈ 0.27 tile/tick;
+    // re-check if KNOCKBACK_SPEED or enemy speeds are bumped substantially.
+    const kb = enemy.knockback;
+    enemy.pos = moveBody(grid, enemy.pos, enemy.radius, (vx + kb.x) * dt, (vy + kb.y) * dt);
+    const decay = Math.max(0, 1 - KNOCKBACK_FRICTION * dt);
+    enemy.knockback = { x: kb.x * decay, y: kb.y * decay };
+  }
+}
+
+/**
+ * Boss attack patterns, escalating in three phases as its HP drops:
+ *  - >66% HP: slow 8-way radial bursts.
+ *  - 33–66%: faster aimed 5-tear spread at the player.
+ *  - <33%: rapid 12-way radial, offset to fill the gaps.
+ * Deterministic: pattern is chosen from HP, timing from a per-boss cooldown.
+ */
+function stepBossAttacks(state: GameState, boss: Enemy, ux: number, uy: number, dt: number): void {
+  boss.fireCooldown = Math.max(0, boss.fireCooldown - dt);
+  if (boss.fireCooldown > 0) return;
+  const ratio = boss.hp / boss.maxHp;
+  if (ratio > 0.66) {
+    spawnRadial(state, boss.pos, 8, 0);
+    boss.fireCooldown = 1.8;
+  } else if (ratio > 0.33) {
+    spawnAimed(state, boss.pos, Math.atan2(uy, ux), 5, 0.28);
+    boss.fireCooldown = 1.3;
+  } else {
+    spawnRadial(state, boss.pos, 12, Math.PI / 12);
+    boss.fireCooldown = 0.9;
+  }
+}
+
+/** Spawns `n` enemy projectiles evenly around a circle, rotated by `offset`. */
+function spawnRadial(state: GameState, origin: Vec2, n: number, offset: number): void {
+  for (let i = 0; i < n; i++) {
+    const a = offset + (i / n) * Math.PI * 2;
+    state.projectiles.push(
+      makeProjectile(
+        state.nextEntityId++,
+        origin,
+        { x: Math.cos(a) * BOSS_SHOT_SPEED, y: Math.sin(a) * BOSS_SHOT_SPEED },
+        BOSS_SHOT_DAMAGE,
+        BOSS_SHOT_LIFE,
+        'enemy',
+      ),
+    );
+  }
+}
+
+/** Spawns an `n`-tear spread centered on `aim` (radians), `spread` apart. */
+function spawnAimed(
+  state: GameState,
+  origin: Vec2,
+  aim: number,
+  n: number,
+  spread: number,
+): void {
+  for (let i = 0; i < n; i++) {
+    const a = aim + (i - (n - 1) / 2) * spread;
+    state.projectiles.push(
+      makeProjectile(
+        state.nextEntityId++,
+        origin,
+        { x: Math.cos(a) * BOSS_SHOT_SPEED, y: Math.sin(a) * BOSS_SHOT_SPEED },
+        BOSS_SHOT_DAMAGE,
+        BOSS_SHOT_LIFE,
+        'enemy',
+      ),
+    );
   }
 }
 
@@ -521,6 +639,7 @@ function stepProjectiles(state: GameState, dt: number): void {
   const survivors: Projectile[] = [];
   for (const p of state.projectiles) {
     p.life -= dt;
+    if (p.homing && p.source === 'player') steerHoming(state, p, dt);
     p.pos = { x: p.pos.x + p.vel.x * dt, y: p.pos.y + p.vel.y * dt };
     if (p.life <= 0) continue;
     if (aabbHitsWall(grid, p.pos.x, p.pos.y, p.radius)) continue; // absorbed by wall
@@ -529,17 +648,22 @@ function stepProjectiles(state: GameState, dt: number): void {
       // Point-in-time hit test. Relies on per-tick travel (speed * dt) staying
       // below enemyRadius + projectileRadius so a tear can't tunnel past an
       // enemy between ticks. Revisit with a swept test if speeds increase a lot.
-      let hit = false;
+      let consumed = false;
       for (const enemy of state.enemies) {
         if (isDead(enemy)) continue;
+        if (p.hits.includes(enemy.id)) continue; // already hit this one
         if (circlesOverlap(p.pos, p.radius, enemy.pos, enemy.radius)) {
           applyDamage(enemy, p.damage);
           applyStatuses(enemy, p.applies);
-          hit = true;
-          break;
+          applyKnockback(enemy, p.vel);
+          p.hits.push(enemy.id);
+          if (!p.piercing) {
+            consumed = true;
+            break;
+          }
         }
       }
-      if (hit) continue; // projectile consumed
+      if (consumed) continue; // non-piercing tear is spent on its first hit
     } else {
       // Enemy projectile: hit the player (negated but still consumed during i-frames).
       const player = state.player;
@@ -555,6 +679,38 @@ function stepProjectiles(state: GameState, dt: number): void {
   }
   state.projectiles = survivors;
   reapDeadEnemies(state);
+}
+
+/** Shoves an enemy in the tear's travel direction. Heavy enemies (boss) resist. */
+function applyKnockback(enemy: Enemy, tearVel: Vec2): void {
+  const m = Math.hypot(tearVel.x, tearVel.y) || 1;
+  const factor = enemy.kind === 'boss' ? 0.2 : 1;
+  const k = KNOCKBACK_SPEED * factor;
+  enemy.knockback = { x: (tearVel.x / m) * k, y: (tearVel.y / m) * k };
+}
+
+/** Steers a homing tear's velocity toward the nearest living enemy, preserving speed. */
+function steerHoming(state: GameState, p: Projectile, dt: number): void {
+  let target: Enemy | undefined;
+  let best = Infinity;
+  for (const e of state.enemies) {
+    if (isDead(e)) continue;
+    const d = Math.hypot(e.pos.x - p.pos.x, e.pos.y - p.pos.y);
+    if (d < best) {
+      best = d;
+      target = e;
+    }
+  }
+  if (!target) return;
+  const speed = Math.hypot(p.vel.x, p.vel.y) || PROJECTILE_SPEED;
+  const current = Math.atan2(p.vel.y, p.vel.x);
+  const desired = Math.atan2(target.pos.y - p.pos.y, target.pos.x - p.pos.x);
+  let diff = desired - current;
+  while (diff > Math.PI) diff -= 2 * Math.PI;
+  while (diff < -Math.PI) diff += 2 * Math.PI;
+  const maxStep = HOMING_TURN_RATE * dt;
+  const next = current + Math.max(-maxStep, Math.min(maxStep, diff));
+  p.vel = { x: Math.cos(next) * speed, y: Math.sin(next) * speed };
 }
 
 /** Removes dead enemies in place so `state.enemies` keeps aliasing the runtime array. */

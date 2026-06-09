@@ -17,6 +17,14 @@ export interface StatModifiers {
   fireRate?: number;
 }
 
+/** Shaping modifiers an item can grant to the player's tears. */
+export interface TearMods {
+  /** Added to the number of tears per shot. */
+  shotCount?: number;
+  piercing?: boolean;
+  homing?: boolean;
+}
+
 export interface Item {
   id: string;
   name: string;
@@ -24,6 +32,8 @@ export interface Item {
   modifiers: StatModifiers;
   /** If set, the player's tears apply this status on hit. */
   tearEffect?: StatusSpec;
+  /** If set, reshapes how the player fires. */
+  tearMods?: TearMods;
 }
 
 /** The player fields an item can mutate. `Player` is structurally compatible. */
@@ -35,6 +45,9 @@ export interface MutableStats {
   fireRate: number;
   items: string[];
   tearEffects: StatusSpec[];
+  shotCount: number;
+  piercing: boolean;
+  homing: boolean;
 }
 
 export const ITEMS: Record<string, Item> = {
@@ -80,6 +93,34 @@ export const ITEMS: Record<string, Item> = {
     modifiers: {},
     tearEffect: { kind: 'slow', duration: 2, magnitude: 0.5 },
   },
+  'split-shot': {
+    id: 'split-shot',
+    name: 'Split Shot',
+    description: 'Fire an extra tear in a spread. +1 shot.',
+    modifiers: {},
+    tearMods: { shotCount: 1 },
+  },
+  'triple-shot': {
+    id: 'triple-shot',
+    name: 'Triple Shot',
+    description: 'Fire three tears in a spread. +2 shots.',
+    modifiers: {},
+    tearMods: { shotCount: 2 },
+  },
+  'piercing-tears': {
+    id: 'piercing-tears',
+    name: 'Piercing Tears',
+    description: 'Your tears pass through enemies.',
+    modifiers: {},
+    tearMods: { piercing: true },
+  },
+  'homing-tears': {
+    id: 'homing-tears',
+    name: 'Homing Tears',
+    description: 'Your tears curve toward enemies.',
+    modifiers: {},
+    tearMods: { homing: true },
+  },
 };
 
 /** Pool of item ids that can drop, in a stable order (for deterministic picking). */
@@ -100,5 +141,11 @@ export function applyItem(player: MutableStats, item: Item): void {
   if (m.tearDamage) player.tearDamage += m.tearDamage;
   if (m.fireRate) player.fireRate += m.fireRate;
   if (item.tearEffect) player.tearEffects.push(item.tearEffect);
+  if (item.tearMods) {
+    const t = item.tearMods;
+    if (t.shotCount) player.shotCount += t.shotCount;
+    if (t.piercing) player.piercing = true;
+    if (t.homing) player.homing = true;
+  }
   player.items.push(item.id);
 }
