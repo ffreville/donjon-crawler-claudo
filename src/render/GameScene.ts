@@ -4,6 +4,7 @@ import {
   FIXED_DT,
   getItem,
   isWall,
+  ROOM_W,
   TELEPORTER_POS,
   TELEPORTER_RADIUS,
   tick,
@@ -15,6 +16,9 @@ import {
 import { createButton, getShowStats, PALETTE } from './ui.js';
 
 export const TILE = 40;
+
+/** Width of the right-hand HUD strip (minimap + stats), outside the play area. */
+export const PANEL_W = 180;
 
 /** Enemy fill color per archetype. */
 const ENEMY_COLORS: Record<EnemyKind, number> = {
@@ -67,6 +71,9 @@ export class GameScene extends Phaser.Scene {
   /** Pause menu (buttons), shown on Escape during play. */
   private pauseMenu!: Phaser.GameObjects.Group;
   private paused = false;
+  /** Minimap (room graph) in the right-hand strip. */
+  private minimap!: Phaser.GameObjects.Group;
+  private minimapKey = '';
   /** Signature of the currently-drawn room, to know when to redraw tiles. */
   private roomKey = '';
   private accumulator = 0;
@@ -88,7 +95,16 @@ export class GameScene extends Phaser.Scene {
 
   create(): void {
     this.tiles = this.add.group();
+    this.minimap = this.add.group();
     this.startRun();
+
+    // Right-hand HUD strip background + separator, outside the play area.
+    const playW = ROOM_W * TILE;
+    this.add.rectangle(playW, 0, PANEL_W, this.scale.height, 0x0c0c12).setOrigin(0).setDepth(40);
+    this.add.rectangle(playW, 0, 2, this.scale.height, 0x2a2a3a).setOrigin(0).setDepth(41);
+    this.add
+      .text(playW + 12, 8, 'MAP', { fontFamily: 'monospace', fontSize: '12px', color: '#8a93a3' })
+      .setDepth(42);
 
     const size = this.state.player.radius * 2 * TILE;
     const p = this.state.player.pos;
@@ -114,9 +130,9 @@ export class GameScene extends Phaser.Scene {
       .setDepth(150)
       .setVisible(false);
 
-    // Semi-transparent character stats panel pinned to the right edge.
+    // Character stats in the right strip, below the minimap.
     this.statsPanel = this.add
-      .text(this.scale.width - 8, 8, '', {
+      .text(this.scale.width - 8, 200, '', {
         fontFamily: 'monospace',
         fontSize: '13px',
         color: '#dff1ff',
@@ -136,6 +152,8 @@ export class GameScene extends Phaser.Scene {
   private startRun(): void {
     this.state = createGame(this.seed);
     this.roomKey = '';
+    this.minimapKey = '';
+    this.minimap?.clear(true, true);
     this.held.clear();
     this.accumulator = 0;
     this.endShown = false;
@@ -305,6 +323,7 @@ export class GameScene extends Phaser.Scene {
     this.syncPickups();
     this.syncTeleporter();
     this.updateItemTooltip();
+    this.updateMinimap();
 
     const type = dungeon.rooms.get(currentRoom)?.type ?? '?';
     const lock = doorsOpen ? '' : '  [LOCKED]';
@@ -439,6 +458,49 @@ export class GameScene extends Phaser.Scene {
       }
     }
     this.tooltip.setVisible(false);
+  }
+
+  /** Redraws the minimap when the floor, current room, or explored set changes. */
+  private updateMinimap(): void {
+    const visited = [...this.state.roomRuntimes.values()].filter((r) => r.spawned).length;
+    const key = `${this.state.floor}:${this.state.currentRoom}:${visited}`;
+    if (key === this.minimapKey) return;
+    this.minimapKey = key;
+    this.drawMinimap();
+  }
+
+  private drawMinimap(): void {
+    this.minimap.clear(true, true);
+    const rooms = [...this.state.dungeon.rooms.values()];
+    if (rooms.length === 0) return;
+
+    const minGx = Math.min(...rooms.map((r) => r.gx));
+    const minGy = Math.min(...rooms.map((r) => r.gy));
+    const cell = 13;
+    const gap = 3;
+    const ox = ROOM_W * TILE + 12;
+    const oy = 26;
+
+    const typeColor: Record<string, number> = {
+      start: 0x46d369,
+      normal: 0x6b7280,
+      treasure: 0xffd23f,
+      shop: 0x4ad6c8,
+      boss: 0xe5484d,
+    };
+
+    for (const room of rooms) {
+      const rt = this.state.roomRuntimes.get(room.id);
+      const visited = rt?.spawned ?? false;
+      const x = ox + (room.gx - minGx) * (cell + gap) + cell / 2;
+      const y = oy + (room.gy - minGy) * (cell + gap) + cell / 2;
+      const color = typeColor[room.type] ?? 0x6b7280;
+      const r = this.add
+        .rectangle(x, y, cell, cell, color, visited ? 1 : 0.25)
+        .setDepth(45);
+      if (room.id === this.state.currentRoom) r.setStrokeStyle(2, 0xffffff);
+      this.minimap.add(r);
+    }
   }
 
   private syncTeleporter(): void {
