@@ -337,6 +337,12 @@ export class GameScene extends Phaser.Scene {
         this.enemySprites.set(e.id, sprite);
       }
       sprite.setPosition(e.pos.x * TILE, e.pos.y * TILE);
+      // Outline shows active status: burning (orange) takes visual priority over slowed (cyan).
+      const burning = e.effects.some((fx) => fx.kind === 'burn');
+      const slowed = e.effects.some((fx) => fx.kind === 'slow');
+      if (burning) sprite.setStrokeStyle(3, 0xff7a3a);
+      else if (slowed) sprite.setStrokeStyle(3, 0x7ad6ff);
+      else sprite.setStrokeStyle(0);
     }
     this.cull(this.enemySprites, live);
   }

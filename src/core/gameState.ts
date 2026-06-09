@@ -15,8 +15,10 @@ import {
   type EnemyKind,
   type Pickup,
   type Projectile,
+  type StatusSpec,
 } from './entities.js';
 import { applyItem, getItem, ITEM_POOL } from './items.js';
+import { applyStatuses, slowFactor } from './status.js';
 import { aabbHitsWall, circlesOverlap, moveBody } from './physics.js';
 import { Rng } from './rng.js';
 import {
@@ -82,6 +84,9 @@ export const ENEMY_FIRE_INTERVAL = 1.6;
 const SHOOTER_RANGE = 5;
 const SHOOTER_FIRE_RANGE = 8;
 
+/** Synergy: an enemy that is both burning and slowed takes extra burn damage. */
+export const BURN_SLOW_SYNERGY = 1.5;
+
 /** Lifecycle of a single run. The simulation only advances while 'playing'. */
 export type RunStatus = 'playing' | 'dead' | 'won';
 
@@ -97,6 +102,8 @@ export interface Player extends Combatant {
   fireRate: number;
   /** Ids of items the player has collected. */
   items: string[];
+  /** Statuses the player's tears apply on hit (from items). */
+  tearEffects: StatusSpec[];
   /** Seconds until the player can fire again. */
   fireCooldown: number;
   /** Seconds of remaining invulnerability. */
@@ -200,6 +207,7 @@ export function createGame(seed: number, opts: NewGameOptions = {}): GameState {
     tearDamage: PLAYER_TEAR_DAMAGE,
     fireRate: PLAYER_FIRE_RATE,
     items: [],
+    tearEffects: [],
     fireCooldown: 0,
     invuln: 0,
     hp: 6,
@@ -366,6 +374,7 @@ export function tick(state: GameState, input: InputState, dt: number): void {
   stepFiring(state, input, dt);
   stepEnemies(state, dt);
   stepProjectiles(state, dt);
+  stepStatuses(state, dt);
   stepContactDamage(state, dt);
   // Death is resolved BEFORE the boss-clear win, so a same-tick death takes
   // precedence: you can't win from the grave. Keep this order.
@@ -418,7 +427,15 @@ function stepFiring(state: GameState, input: InputState, dt: number): void {
   if (len > 0 && player.fireCooldown <= 0) {
     const vel: Vec2 = { x: (ax / len) * PROJECTILE_SPEED, y: (ay / len) * PROJECTILE_SPEED };
     state.projectiles.push(
-      makeProjectile(state.nextEntityId++, player.pos, vel, player.tearDamage, PROJECTILE_LIFE, 'player'),
+      makeProjectile(
+        state.nextEntityId++,
+        player.pos,
+        vel,
+        player.tearDamage,
+        PROJECTILE_LIFE,
+        'player',
+        [...player.tearEffects],
+      ),
     );
     player.fireCooldown = 1 / player.fireRate;
   }
@@ -432,17 +449,18 @@ function stepEnemies(state: GameState, dt: number): void {
     const dist = Math.hypot(dx, dy) || 1;
     const ux = dx / dist;
     const uy = dy / dist;
+    const speed = enemy.speed * slowFactor(enemy); // status effects (slow) scale movement
 
     let vx = 0;
     let vy = 0;
     if (enemy.kind === 'shooter') {
       // Hold a standoff distance: retreat if too close, approach if too far.
       if (dist < SHOOTER_RANGE - 0.5) {
-        vx = -ux * enemy.speed;
-        vy = -uy * enemy.speed;
+        vx = -ux * speed;
+        vy = -uy * speed;
       } else if (dist > SHOOTER_RANGE + 0.5) {
-        vx = ux * enemy.speed;
-        vy = uy * enemy.speed;
+        vx = ux * speed;
+        vy = uy * speed;
       }
       enemy.fireCooldown = Math.max(0, enemy.fireCooldown - dt);
       if (enemy.fireCooldown <= 0 && dist < SHOOTER_FIRE_RANGE) {
@@ -460,8 +478,8 @@ function stepEnemies(state: GameState, dt: number): void {
       }
     } else {
       // chaser / swarmer / tank: walk straight at the player.
-      vx = ux * enemy.speed;
-      vy = uy * enemy.speed;
+      vx = ux * speed;
+      vy = uy * speed;
     }
 
     enemy.vel = { x: vx, y: vy };
@@ -487,6 +505,7 @@ function stepProjectiles(state: GameState, dt: number): void {
         if (isDead(enemy)) continue;
         if (circlesOverlap(p.pos, p.radius, enemy.pos, enemy.radius)) {
           applyDamage(enemy, p.damage);
+          applyStatuses(enemy, p.applies);
           hit = true;
           break;
         }
@@ -506,10 +525,31 @@ function stepProjectiles(state: GameState, dt: number): void {
     survivors.push(p);
   }
   state.projectiles = survivors;
-  // Remove dead enemies in place so `state.enemies` keeps aliasing the runtime array.
+  reapDeadEnemies(state);
+}
+
+/** Removes dead enemies in place so `state.enemies` keeps aliasing the runtime array. */
+function reapDeadEnemies(state: GameState): void {
   for (let i = state.enemies.length - 1; i >= 0; i--) {
     if (isDead(state.enemies[i]!)) state.enemies.splice(i, 1);
   }
+}
+
+/** Ticks status effects on enemies: burn deals damage over time, effects expire. */
+function stepStatuses(state: GameState, dt: number): void {
+  for (const enemy of state.enemies) {
+    if (enemy.effects.length === 0) continue;
+    const slowed = enemy.effects.some((e) => e.kind === 'slow');
+    for (const e of enemy.effects) {
+      if (e.kind === 'burn') {
+        const dps = e.magnitude * (slowed ? BURN_SLOW_SYNERGY : 1);
+        applyDamage(enemy, dps * dt);
+      }
+      e.remaining -= dt;
+    }
+    enemy.effects = enemy.effects.filter((e) => e.remaining > 0);
+  }
+  reapDeadEnemies(state); // burn can kill
 }
 
 function stepContactDamage(state: GameState, dt: number): void {

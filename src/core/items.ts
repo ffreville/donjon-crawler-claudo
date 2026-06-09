@@ -4,6 +4,8 @@
  * to add, diff, and balance via headless simulation.
  */
 
+import type { StatusSpec } from './entities.js';
+
 export interface StatModifiers {
   /** Added to max HP; the player is also healed by this amount. */
   maxHp?: number;
@@ -20,6 +22,8 @@ export interface Item {
   name: string;
   description: string;
   modifiers: StatModifiers;
+  /** If set, the player's tears apply this status on hit. */
+  tearEffect?: StatusSpec;
 }
 
 /** The player fields an item can mutate. `Player` is structurally compatible. */
@@ -30,6 +34,7 @@ export interface MutableStats {
   tearDamage: number;
   fireRate: number;
   items: string[];
+  tearEffects: StatusSpec[];
 }
 
 export const ITEMS: Record<string, Item> = {
@@ -57,6 +62,20 @@ export const ITEMS: Record<string, Item> = {
     description: 'A larger heart. +2 max HP (and heal).',
     modifiers: { maxHp: 2 },
   },
+  'fire-tears': {
+    id: 'fire-tears',
+    name: 'Fire Tears',
+    description: 'Your tears set enemies on fire (burn over time).',
+    modifiers: {},
+    tearEffect: { kind: 'burn', duration: 2, magnitude: 2 },
+  },
+  'frost-tears': {
+    id: 'frost-tears',
+    name: 'Frost Tears',
+    description: 'Your tears chill enemies, slowing them.',
+    modifiers: {},
+    tearEffect: { kind: 'slow', duration: 2, magnitude: 0.5 },
+  },
 };
 
 /** Pool of item ids that can drop, in a stable order (for deterministic picking). */
@@ -76,5 +95,6 @@ export function applyItem(player: MutableStats, item: Item): void {
   if (m.speed) player.speed += m.speed;
   if (m.tearDamage) player.tearDamage += m.tearDamage;
   if (m.fireRate) player.fireRate += m.fireRate;
+  if (item.tearEffect) player.tearEffects.push(item.tearEffect);
   player.items.push(item.id);
 }

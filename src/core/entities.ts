@@ -22,9 +22,29 @@ export interface Enemy extends Combatant {
   touchDamage: number;
   /** Seconds until this enemy can fire again (shooters only). */
   fireCooldown: number;
+  /** Active status effects (burn, slow, ...). */
+  effects: StatusEffect[];
 }
 
 export type ProjectileSource = 'player' | 'enemy';
+
+export type StatusKind = 'burn' | 'slow';
+
+/** A status an item/projectile can apply on hit. */
+export interface StatusSpec {
+  kind: StatusKind;
+  /** Seconds the effect lasts. */
+  duration: number;
+  /** burn: damage per second; slow: speed multiplier in (0, 1). */
+  magnitude: number;
+}
+
+/** A status currently active on a combatant. */
+export interface StatusEffect {
+  kind: StatusKind;
+  remaining: number;
+  magnitude: number;
+}
 
 /** A moving damage carrier (a "tear"). Lives for `life` seconds or until it hits something. */
 export interface Projectile {
@@ -35,6 +55,8 @@ export interface Projectile {
   damage: number;
   life: number;
   source: ProjectileSource;
+  /** Statuses applied to the target on hit (player tears only). */
+  applies: StatusSpec[];
 }
 
 export type PickupKind = 'item' | 'heart';
@@ -102,6 +124,7 @@ export function makeEnemy(id: number, pos: Vec2, stats: EnemyStats = {}): Enemy 
     speed: stats.speed ?? base.speed,
     touchDamage: stats.touchDamage ?? base.touchDamage,
     fireCooldown: 0,
+    effects: [],
     hp,
     maxHp: hp,
     attack: stats.attack ?? base.attack,
@@ -116,6 +139,7 @@ export function makeProjectile(
   damage: number,
   life: number,
   source: ProjectileSource,
+  applies: StatusSpec[] = [],
   radius = 0.15,
 ): Projectile {
   return {
@@ -126,5 +150,6 @@ export function makeProjectile(
     damage,
     life,
     source,
+    applies,
   };
 }

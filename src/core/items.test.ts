@@ -9,6 +9,7 @@ const baseStats = (over: Partial<MutableStats> = {}): MutableStats => ({
   tearDamage: 3,
   fireRate: 3,
   items: [],
+  tearEffects: [],
   ...over,
 });
 

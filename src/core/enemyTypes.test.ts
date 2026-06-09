@@ -52,8 +52,8 @@ describe('shooter behaviour', () => {
     const p = s.player.pos;
     // Two enemy projectiles already overlapping the player.
     s.projectiles.push(
-      { id: 1, pos: { x: p.x, y: p.y }, vel: { x: 0, y: 0 }, radius: 0.15, damage: 1, life: 1, source: 'enemy' },
-      { id: 2, pos: { x: p.x, y: p.y }, vel: { x: 0, y: 0 }, radius: 0.15, damage: 1, life: 1, source: 'enemy' },
+      { id: 1, pos: { x: p.x, y: p.y }, vel: { x: 0, y: 0 }, radius: 0.15, damage: 1, life: 1, source: 'enemy', applies: [] },
+      { id: 2, pos: { x: p.x, y: p.y }, vel: { x: 0, y: 0 }, radius: 0.15, damage: 1, life: 1, source: 'enemy', applies: [] },
     );
     const hp0 = s.player.hp;
     tick(s, NO_INPUT, FIXED_DT);
