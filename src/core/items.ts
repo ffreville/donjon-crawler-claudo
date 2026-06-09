@@ -41,8 +41,12 @@ export const ITEMS: Record<string, Item> = {
   'sharp-tears': {
     id: 'sharp-tears',
     name: 'Sharp Tears',
-    description: 'Your tears hit harder. +2 damage.',
-    modifiers: { tearDamage: 2 },
+    // +3 (not +2) so a single pickup crosses the 6-HP breakpoint: base tear
+    // damage 3 + 3 = 6 one-shots a basic chaser/shooter (was 2 hits at +2, a
+    // dead item), and cuts 8-HP floor-2 enemies from 3 hits to 2. Backed by the
+    // balance sim in balance.test.ts.
+    description: 'Your tears hit harder. +3 damage.',
+    modifiers: { tearDamage: 3 },
   },
   'swift-boots': {
     id: 'swift-boots',

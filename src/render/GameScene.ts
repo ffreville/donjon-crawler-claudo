@@ -309,7 +309,7 @@ export class GameScene extends Phaser.Scene {
     const type = dungeon.rooms.get(currentRoom)?.type ?? '?';
     const lock = doorsOpen ? '' : '  [LOCKED]';
     this.hud.setText(
-      `HP ${player.hp}/${player.maxHp}   floor ${this.state.floor}   room: ${type}${lock}   enemies ${this.state.enemies.length}`,
+      `HP ${player.hp}/${player.maxHp}   coins ${player.coins}   floor ${this.state.floor}   room: ${type}${lock}   enemies ${this.state.enemies.length}`,
     );
 
     this.statsPanel.setVisible(getShowStats(this)); // reflect the Options toggle live
@@ -323,7 +323,6 @@ export class GameScene extends Phaser.Scene {
         `DMG   ${num(player.tearDamage)}`,
         `RATE  ${num(player.fireRate)}/s`,
         `SPEED ${num(player.speed)}`,
-        `COINS ${player.coins}`,
         `FLOOR ${this.state.floor}`,
         '',
         'ITEMS',

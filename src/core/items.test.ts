@@ -34,7 +34,7 @@ describe('applyItem', () => {
   it('adds flat stat modifiers', () => {
     const p = baseStats();
     applyItem(p, ITEMS['sharp-tears']!);
-    expect(p.tearDamage).toBe(5);
+    expect(p.tearDamage).toBe(6); // base 3 + sharp-tears 3 (one-shots a 6-HP basic)
     expect(p.items).toEqual(['sharp-tears']);
   });
 

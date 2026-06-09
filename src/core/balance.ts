@@ -12,9 +12,19 @@
  * yields identical metrics.
  */
 
-import { createGame, tick, FIXED_DT, type GameState, type InputState } from './gameState.js';
+import {
+  createGame,
+  tick,
+  ENEMY_FIRE_INTERVAL,
+  ENEMY_HP_PER_FLOOR,
+  FIXED_DT,
+  type GameState,
+  type InputState,
+} from './gameState.js';
 import { applyItem, getItem } from './items.js';
-import type { Enemy } from './entities.js';
+import { ENEMY_ARCHETYPES, makeEnemy, type Enemy, type EnemyKind } from './entities.js';
+import { Rng } from './rng.js';
+import { ROOM_W, ROOM_H } from './room.js';
 import type { Vec2 } from './types.js';
 
 /** Preferred standoff distance the bot tries to hold from the nearest enemy, in tiles. */
@@ -102,8 +112,24 @@ export function botPolicy(state: GameState): InputState {
 }
 
 export interface EncounterOptions {
-  /** Number of enemies forced into the start room. */
+  /**
+   * Number of enemies forced into the start room. Ignored when `enemyKinds` is
+   * given (the composition then determines the count).
+   */
   enemyCount: number;
+  /**
+   * Optional explicit enemy composition. When set, the start room is populated
+   * with exactly these archetypes (in order), instead of the default
+   * floor-1 random chaser/swarmer mix. Lets a balance question target a
+   * specific threat profile (e.g. all shooters, or a tank wall).
+   */
+  enemyKinds?: readonly EnemyKind[];
+  /**
+   * Floor number used only for per-floor HP scaling of an explicit
+   * `enemyKinds` composition (+`ENEMY_HP_PER_FLOOR` HP per floor above 1).
+   * Defaults to 1. Has no effect without `enemyKinds`.
+   */
+  floor?: number;
   /** Optional item id to grant the player before the fight (e.g. 'sharp-tears'). */
   applyItemId?: string;
   /**
@@ -126,11 +152,61 @@ export interface EncounterMetrics {
 }
 
 /**
+ * Replaces the current room's enemies with an explicit `kinds` composition,
+ * scaled to `floor`. Placement is deterministic (seeded by the encounter seed)
+ * and uses the same wall-clearance + center-exclusion rules as the real
+ * `populateRoom`, so positions are plausible in-game and reproducible.
+ *
+ * Pure: the only randomness is a fresh seeded `Rng`; no `Math.random`.
+ */
+function composeEnemies(
+  state: GameState,
+  seed: number,
+  kinds: readonly EnemyKind[],
+  floor: number,
+): void {
+  const rng = new Rng((seed ^ 0x5bd1e995) >>> 0);
+  const tier = Math.max(0, floor - 1);
+  const center: Vec2 = { x: ROOM_W / 2, y: ROOM_H / 2 };
+  const enemies: Enemy[] = [];
+  for (const kind of kinds) {
+    const r = ENEMY_ARCHETYPES[kind].radius;
+    // Find a spot away from the player's center spawn, fully inside the walls.
+    let pos: Vec2 = center;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const tx = rng.range(1, ROOM_W - 2);
+      const ty = rng.range(1, ROOM_H - 2);
+      const cand: Vec2 = { x: tx + 0.5, y: ty + 0.5 };
+      if (Math.hypot(cand.x - center.x, cand.y - center.y) < 3) continue;
+      pos = {
+        x: Math.min(Math.max(cand.x, 1 + r), ROOM_W - 1 - r),
+        y: Math.min(Math.max(cand.y, 1 + r), ROOM_H - 1 - r),
+      };
+      break;
+    }
+    const hp = ENEMY_ARCHETYPES[kind].hp + tier * ENEMY_HP_PER_FLOOR;
+    const enemy = makeEnemy(state.nextEntityId++, pos, { kind, hp });
+    // Match populateRoom: stagger shooter cooldowns so they don't all fire in sync.
+    if (kind === 'shooter') enemy.fireCooldown = rng.next() * ENEMY_FIRE_INTERVAL;
+    enemies.push(enemy);
+  }
+  // Splice in place so the GameState.enemies alias to the room runtime stays valid.
+  state.enemies.splice(0, state.enemies.length, ...enemies);
+  state.doorsOpen = state.enemies.length === 0;
+}
+
+/**
  * Plays a single locked-room encounter headlessly with the kiting bot.
  * Deterministic: same `(seed, options)` always returns identical metrics.
  */
 export function simulateEncounter(seed: number, opts: EncounterOptions): EncounterMetrics {
-  const state = createGame(seed, { enemyCount: opts.enemyCount });
+  // When an explicit composition is requested we still want a populated start
+  // room to alias into, so spawn one chaser then replace the lot.
+  const startCount = opts.enemyKinds ? 1 : opts.enemyCount;
+  const state = createGame(seed, { enemyCount: startCount });
+  if (opts.enemyKinds) {
+    composeEnemies(state, seed, opts.enemyKinds, opts.floor ?? 1);
+  }
   const grants: string[] = [];
   if (opts.applyItemId) grants.push(opts.applyItemId);
   if (opts.applyItemIds) grants.push(...opts.applyItemIds);

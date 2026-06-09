@@ -6,11 +6,21 @@ import {
   type EncounterOptions,
 } from './balance.js';
 import { createGame, type GameState } from './gameState.js';
+import type { EnemyKind } from './entities.js';
 
 /** Fixed, replayable seed set: seeds 1..60. */
 const SEEDS: readonly number[] = Array.from({ length: 60 }, (_, i) => i + 1);
 
 const BASE: EncounterOptions = { enemyCount: 4, maxTicks: 60 * 30 };
+
+/** A tough composition the bot cannot trivialize, so hpLost discriminates. */
+const TOUGH: readonly EnemyKind[] = ['shooter', 'shooter', 'tank', 'tank'];
+const TOUGH_OPTS: EncounterOptions = {
+  enemyCount: 0,
+  enemyKinds: TOUGH,
+  floor: 3,
+  maxTicks: 60 * 30,
+};
 
 /** A real GameState with a single enemy placed directly to the player's right. */
 function stateWithEnemyToTheRight(): GameState {
@@ -63,25 +73,105 @@ describe('balance: item impact properties', () => {
     expect(rapid.avgTicks).toBeLessThan(baseline.avgTicks);
   });
 
-  it("'sharp-tears' is a breakpoint item: 1x is neutral, 2x cuts time-to-kill", () => {
-    // Basic enemies have 6 HP and base tearDamage is 3 → 2 hits to kill.
-    // A single +2 sharp-tears (5 dmg) is still 2 hits, so it must NOT make
-    // kills slower (no regression) — and in practice is neutral here.
+  it("'sharp-tears' (+3) crosses the one-shot breakpoint on a single pickup", () => {
+    // Basic enemies have 6 HP; base tearDamage is 3 → 2 hits. sharp-tears is +3
+    // (6 dmg) so ONE pickup one-shots them. This is the fix for the dead-item
+    // problem: a single sharp-tears must now meaningfully cut time-to-kill,
+    // not merely "not regress". Use a comfortable margin, not an exact number.
     const oneSharp = aggregateRuns(SEEDS, { ...BASE, applyItemId: 'sharp-tears' });
-    expect(oneSharp.avgTicks).toBeLessThanOrEqual(baseline.avgTicks);
+    expect(oneSharp.avgTicks).toBeLessThan(baseline.avgTicks * 0.85);
 
-    // Two sharp-tears (7 dmg) crosses the one-shot breakpoint → far faster.
+    // A second sharp-tears can't beat one-shotting, so it never regresses.
     const twoSharp = aggregateRuns(SEEDS, {
       ...BASE,
       applyItemIds: ['sharp-tears', 'sharp-tears'],
     });
-    expect(twoSharp.avgTicks).toBeLessThan(baseline.avgTicks);
+    expect(twoSharp.avgTicks).toBeLessThanOrEqual(oneSharp.avgTicks + 1);
   });
 
-  it("'vitality' is purely defensive — it never speeds up kills", () => {
+  it("'fire-tears' (burn DoT) lowers time-to-kill vs a durable comp", () => {
+    // Against tanky enemies, burn does meaningful extra work over time. The
+    // robust direction is faster clears, not an exact tick count.
+    const base = aggregateRuns(SEEDS, TOUGH_OPTS);
+    const fire = aggregateRuns(SEEDS, { ...TOUGH_OPTS, applyItemId: 'fire-tears' });
+    expect(fire.avgTicks).toBeLessThan(base.avgTicks);
+  });
+
+  it("'vitality' never speeds up kills (purely defensive)", () => {
     const vit = aggregateRuns(SEEDS, { ...BASE, applyItemId: 'vitality' });
     // HP only: it should never reduce time-to-kill, and not regress clears.
     expect(vit.avgTicks).toBeGreaterThanOrEqual(baseline.avgTicks - 1);
     expect(vit.clearedRatio).toBeGreaterThanOrEqual(baseline.clearedRatio);
+  });
+});
+
+describe('balance: burn+slow synergy', () => {
+  // Synergy lives in gameState: an enemy that is BOTH burning and slowed takes
+  // +50% burn damage. So fire+frost together should out-kill fire alone — by
+  // more than frost (which barely dents clear time on its own) would explain.
+  const tanks: readonly EnemyKind[] = ['tank', 'tank', 'chaser'];
+  const opts: EncounterOptions = { enemyCount: 0, enemyKinds: tanks, floor: 3, maxTicks: 60 * 30 };
+
+  it('fire+frost clears faster than fire alone (synergy is live)', () => {
+    const fire = aggregateRuns(SEEDS, { ...opts, applyItemId: 'fire-tears' });
+    const fireFrost = aggregateRuns(SEEDS, {
+      ...opts,
+      applyItemIds: ['fire-tears', 'frost-tears'],
+    });
+    expect(fireFrost.avgTicks).toBeLessThan(fire.avgTicks);
+  });
+});
+
+describe('balance: damage mitigation vs tough encounters', () => {
+  // Against shooters + tanks the bot takes real damage, so hpLost discriminates
+  // (it saturated near 0 against basic chasers). Measured over the seed set,
+  // offensive power doubles as mitigation: ending fights sooner means fewer
+  // incoming hits. swift-boots/vitality do NOT measurably reduce hpLost here
+  // (speed doesn't help this comp; vitality is invisible to a start-full metric)
+  // — so we assert the levers that robustly do.
+  const base = aggregateRuns(SEEDS, TOUGH_OPTS);
+
+  it('the tough comp actually hurts the bot (metric is discriminating)', () => {
+    expect(base.avgHpLost).toBeGreaterThan(1);
+  });
+
+  it("'sharp-tears' reduces HP lost by ending fights sooner", () => {
+    const sharp = aggregateRuns(SEEDS, { ...TOUGH_OPTS, applyItemId: 'sharp-tears' });
+    expect(sharp.avgTicks).toBeLessThan(base.avgTicks);
+    expect(sharp.avgHpLost).toBeLessThan(base.avgHpLost);
+  });
+
+  it("'fire-tears' also reduces HP lost (burn shortens fights)", () => {
+    const fire = aggregateRuns(SEEDS, { ...TOUGH_OPTS, applyItemId: 'fire-tears' });
+    expect(fire.avgHpLost).toBeLessThan(base.avgHpLost);
+  });
+});
+
+describe('balance: composed encounters are deterministic', () => {
+  it('same seed + explicit composition yields identical metrics', () => {
+    const opts: EncounterOptions = {
+      enemyCount: 0,
+      enemyKinds: ['tank', 'shooter', 'swarmer'],
+      floor: 2,
+      maxTicks: 60 * 30,
+    };
+    expect(simulateEncounter(13, opts)).toEqual(simulateEncounter(13, opts));
+  });
+
+  it('honors per-floor HP scaling: a higher floor takes no less time to clear', () => {
+    const f1 = aggregateRuns(SEEDS, {
+      enemyCount: 0,
+      enemyKinds: ['chaser', 'chaser', 'chaser'],
+      floor: 1,
+      maxTicks: 60 * 30,
+    });
+    const f3 = aggregateRuns(SEEDS, {
+      enemyCount: 0,
+      enemyKinds: ['chaser', 'chaser', 'chaser'],
+      floor: 3,
+      maxTicks: 60 * 30,
+    });
+    // Floor 3 chasers have +4 HP each, so they cannot clear faster than floor 1.
+    expect(f3.avgTicks).toBeGreaterThan(f1.avgTicks);
   });
 });

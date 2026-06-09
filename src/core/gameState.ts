@@ -67,7 +67,7 @@ export const TELEPORTER_RADIUS = 0.5;
 export const MAX_FLOORS = 3;
 
 /** Difficulty scaling per floor (floor 1 = base values). */
-const ENEMY_HP_PER_FLOOR = 2;
+export const ENEMY_HP_PER_FLOOR = 2;
 const ENEMIES_PER_FLOOR = 1;
 const BOSS_HP_BASE = 30;
 const BOSS_HP_PER_FLOOR = 15;
