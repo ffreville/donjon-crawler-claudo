@@ -640,6 +640,18 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
+    // Spike traps: a small gray triangle on each trapped tile.
+    for (const trap of this.state.traps) {
+      const cx = trap.x * TILE;
+      const cy = trap.y * TILE;
+      const s = TILE * 0.32;
+      const spike = this.add
+        .triangle(cx, cy, -s, s, 0, -s, s, s, 0x9aa0aa)
+        .setStrokeStyle(1, 0x5b6066)
+        .setDepth(2);
+      this.tiles.add(spike);
+    }
+
     // Mark doors that lead to a boss / mini-boss room so the player is warned.
     for (const door of this.state.doors) {
       const neighborType = dungeon.rooms.get(door.to)?.type;

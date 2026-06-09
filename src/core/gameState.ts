@@ -91,6 +91,13 @@ export const HEART_HEAL = 1;
 /** Coins: combat rooms drop 1..COIN_DROP_MAX coins; the shop sells with these. */
 export const COIN_DROP_MAX = 3;
 
+/** Traps: a fraction of normal rooms get spikes; each deals TRAP_DAMAGE on contact. */
+export const TRAP_ROOM_CHANCE = 0.4;
+export const TRAP_MIN = 2;
+export const TRAP_MAX = 5;
+export const TRAP_DAMAGE = 1;
+export const TRAP_RADIUS = 0.3;
+
 /** Shooter-enemy projectile tuning. */
 export const ENEMY_SHOT_SPEED = 7;
 export const ENEMY_SHOT_DAMAGE = 1;
@@ -162,6 +169,8 @@ export const NO_INPUT: InputState = { moveX: 0, moveY: 0, aimX: 0, aimY: 0 };
 export interface RoomRuntime {
   enemies: Enemy[];
   pickups: Pickup[];
+  /** Static spike-trap positions (tile centers). */
+  traps: Vec2[];
   spawned: boolean;
 }
 
@@ -184,6 +193,8 @@ export interface GameState {
   projectiles: Projectile[];
   /** Item pickups in the current room (aliases the current room's runtime array). */
   pickups: Pickup[];
+  /** Spike traps in the current room (aliases the current room's runtime array). */
+  traps: Vec2[];
   roomRuntimes: Map<RoomId, RoomRuntime>;
   doors: Door[];
   /** Whether the current room's doors are open (true when no enemies remain). */
@@ -265,6 +276,7 @@ export function createGame(seed: number, opts: NewGameOptions = {}): GameState {
     enemies: [],
     projectiles: [],
     pickups: [],
+    traps: [],
     roomRuntimes: new Map(),
     doors: [],
     doorsOpen: true,
@@ -296,7 +308,7 @@ function buildFloor(state: GameState, floor: number, startEnemies: number): void
   state.dungeon = generateDungeon(new Rng(floorSeed(state.seed, floor)), opts);
   state.roomRuntimes = new Map();
   for (const id of state.dungeon.rooms.keys()) {
-    state.roomRuntimes.set(id, { enemies: [], pickups: [], spawned: false });
+    state.roomRuntimes.set(id, { enemies: [], pickups: [], traps: [], spawned: false });
   }
   state.bossDefeated = false;
   state.projectiles = [];
@@ -405,6 +417,24 @@ export function populateRoom(state: GameState, roomId: RoomId, forcedCount?: num
     rt.enemies.push(enemy);
     placed++;
   }
+
+  // Some combat rooms are trapped with spikes. Drawn from the same room rng
+  // after enemy placement (so enemy layouts are unchanged), kept away from the
+  // room center so a door/centre arrival isn't standing on one.
+  if (forcedCount === undefined && room.type === 'normal' && rng.chance(TRAP_ROOM_CHANCE)) {
+    const trapCount = rng.range(TRAP_MIN, TRAP_MAX);
+    let t = 0;
+    let tries = 0;
+    while (t < trapCount && tries < trapCount * 20) {
+      tries++;
+      const tx = rng.range(1, ROOM_W - 2);
+      const ty = rng.range(1, ROOM_H - 2);
+      const pos: Vec2 = { x: tx + 0.5, y: ty + 0.5 };
+      if (Math.hypot(pos.x - center.x, pos.y - center.y) < 2) continue;
+      rt.traps.push(pos);
+      t++;
+    }
+  }
 }
 
 /**
@@ -420,6 +450,7 @@ export function enterRoom(state: GameState, roomId: RoomId, fromDir?: Direction)
   // Alias the runtime arrays directly so in-place edits (splice) stay in sync.
   state.enemies = rt.enemies;
   state.pickups = rt.pickups;
+  state.traps = rt.traps;
   state.projectiles = [];
   state.doors = computeDoors(state.dungeon, roomId);
   state.grid = makeRoomGrid();
@@ -457,7 +488,8 @@ export function tick(state: GameState, input: InputState, dt: number): void {
   stepEnemies(state, dt, enemiesActive);
   stepProjectiles(state, dt);
   stepStatuses(state, dt);
-  if (enemiesActive) stepContactDamage(state, dt);
+  if (enemiesActive) stepContactDamage(state, dt); // decrements invuln, may grant i-frames
+  if (enemiesActive) stepTraps(state); // shares the i-frame window; must run after contact
   // Death is resolved BEFORE the boss-clear win, so a same-tick death takes
   // precedence: you can't win from the grave. Keep this order.
   if (isDead(state.player)) {
@@ -771,6 +803,23 @@ function stepContactDamage(state: GameState, dt: number): void {
   for (const enemy of state.enemies) {
     if (circlesOverlap(player.pos, player.radius, enemy.pos, enemy.radius)) {
       applyDamage(player, enemy.touchDamage);
+      player.invuln = PLAYER_IFRAMES;
+      break;
+    }
+  }
+}
+
+/**
+ * Spike traps damage the player on contact, then trigger i-frames like any hit.
+ * `invuln` is already decremented this tick by stepContactDamage (which runs
+ * first), so a same-tick enemy hit takes precedence and the trap is absorbed.
+ */
+function stepTraps(state: GameState): void {
+  const { player } = state;
+  if (player.invuln > 0) return;
+  for (const trap of state.traps) {
+    if (circlesOverlap(player.pos, player.radius, trap, TRAP_RADIUS)) {
+      applyDamage(player, TRAP_DAMAGE);
       player.invuln = PLAYER_IFRAMES;
       break;
     }
