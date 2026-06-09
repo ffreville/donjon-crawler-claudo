@@ -59,7 +59,7 @@ export interface Projectile {
   applies: StatusSpec[];
 }
 
-export type PickupKind = 'item' | 'heart';
+export type PickupKind = 'item' | 'heart' | 'coin';
 
 interface PickupBase {
   id: number;
@@ -67,30 +67,48 @@ interface PickupBase {
   radius: number;
 }
 
-/** A pickup that grants an item by id. */
+/** A pickup that grants an item by id. `cost` > 0 means it must be bought (shop). */
 export interface ItemPickup extends PickupBase {
   kind: 'item';
   itemId: string;
+  cost: number;
 }
 
-/** A pickup that heals the player by `heal` HP. */
+/** A pickup that heals the player by `heal` HP. `cost` > 0 means it must be bought. */
 export interface HeartPickup extends PickupBase {
   kind: 'heart';
   heal: number;
+  cost: number;
+}
+
+/** A pickup that grants `value` coins. Always free to grab. */
+export interface CoinPickup extends PickupBase {
+  kind: 'coin';
+  value: number;
 }
 
 /**
  * A collectible lying in a room, picked up on contact. Discriminated on `kind`
- * so the compiler guarantees `itemId` / `heal` are present for the right kind.
+ * so the compiler guarantees the right payload fields are present.
  */
-export type Pickup = ItemPickup | HeartPickup;
+export type Pickup = ItemPickup | HeartPickup | CoinPickup;
 
-export function makePickup(id: number, pos: Vec2, itemId: string, radius = 0.35): ItemPickup {
-  return { id, pos: { x: pos.x, y: pos.y }, radius, kind: 'item', itemId };
+export function makePickup(
+  id: number,
+  pos: Vec2,
+  itemId: string,
+  cost = 0,
+  radius = 0.35,
+): ItemPickup {
+  return { id, pos: { x: pos.x, y: pos.y }, radius, kind: 'item', itemId, cost };
 }
 
-export function makeHeart(id: number, pos: Vec2, heal = 1, radius = 0.3): HeartPickup {
-  return { id, pos: { x: pos.x, y: pos.y }, radius, kind: 'heart', heal };
+export function makeHeart(id: number, pos: Vec2, heal = 1, cost = 0, radius = 0.3): HeartPickup {
+  return { id, pos: { x: pos.x, y: pos.y }, radius, kind: 'heart', heal, cost };
+}
+
+export function makeCoin(id: number, pos: Vec2, value = 1, radius = 0.25): CoinPickup {
+  return { id, pos: { x: pos.x, y: pos.y }, radius, kind: 'coin', value };
 }
 
 export interface EnemyStats {

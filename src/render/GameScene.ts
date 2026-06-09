@@ -10,6 +10,7 @@ import {
   type EnemyKind,
   type GameState,
   type InputState,
+  type PickupKind,
 } from '../core/index.js';
 import { createButton, getShowStats, PALETTE } from './ui.js';
 
@@ -21,6 +22,13 @@ const ENEMY_COLORS: Record<EnemyKind, number> = {
   swarmer: 0xff9f43,
   shooter: 0x5b8cff,
   tank: 0x9b6b3a,
+};
+
+/** Pickup fill color per kind. */
+const PICKUP_COLORS: Record<PickupKind, number> = {
+  item: 0x4ad6c8,
+  heart: 0xff6b81,
+  coin: 0xffd23f,
 };
 
 /** Max simulation steps per frame, so a stalled tab can't trigger a death spiral. */
@@ -71,6 +79,7 @@ export class GameScene extends Phaser.Scene {
   private enemySprites = new Map<number, Phaser.GameObjects.Rectangle>();
   private projectileSprites = new Map<number, Phaser.GameObjects.Arc>();
   private pickupSprites = new Map<number, Phaser.GameObjects.Arc>();
+  private priceLabels = new Map<number, Phaser.GameObjects.Text>();
   private teleporter?: Phaser.GameObjects.Arc;
 
   constructor() {
@@ -138,6 +147,8 @@ export class GameScene extends Phaser.Scene {
     this.projectileSprites.clear();
     for (const s of this.pickupSprites.values()) s.destroy();
     this.pickupSprites.clear();
+    for (const s of this.priceLabels.values()) s.destroy();
+    this.priceLabels.clear();
     this.teleporter?.destroy();
     this.teleporter = undefined;
     this.tiles.clear(true, true);
@@ -312,6 +323,7 @@ export class GameScene extends Phaser.Scene {
         `DMG   ${num(player.tearDamage)}`,
         `RATE  ${num(player.fireRate)}/s`,
         `SPEED ${num(player.speed)}`,
+        `COINS ${player.coins}`,
         `FLOOR ${this.state.floor}`,
         '',
         'ITEMS',
@@ -368,13 +380,28 @@ export class GameScene extends Phaser.Scene {
       live.add(pk.id);
       let sprite = this.pickupSprites.get(pk.id);
       if (!sprite) {
-        const color = pk.kind === 'heart' ? 0xff6b81 : 0x4ad6c8;
+        const color = PICKUP_COLORS[pk.kind];
         sprite = this.add.circle(0, 0, pk.radius * TILE, color).setDepth(6);
         this.pickupSprites.set(pk.id, sprite);
       }
       sprite.setPosition(pk.pos.x * TILE, pk.pos.y * TILE);
+
+      // Price tag under priced (shop) pickups.
+      const cost = pk.kind === 'coin' ? 0 : pk.cost;
+      if (cost > 0) {
+        let label = this.priceLabels.get(pk.id);
+        if (!label) {
+          label = this.add
+            .text(0, 0, `${cost}c`, { fontFamily: 'monospace', fontSize: '12px', color: '#ffd23f' })
+            .setOrigin(0.5, 0)
+            .setDepth(60);
+          this.priceLabels.set(pk.id, label);
+        }
+        label.setPosition(pk.pos.x * TILE, pk.pos.y * TILE + pk.radius * TILE + 2);
+      }
     }
     this.cull(this.pickupSprites, live);
+    this.cull(this.priceLabels, live);
   }
 
   /** Shows the nearby pickup's name + effect when the player is within ~1 tile. */
@@ -392,11 +419,17 @@ export class GameScene extends Phaser.Scene {
     }
     if (nearest && best <= SHOW_RANGE) {
       let label: string | undefined;
-      if (nearest.kind === 'heart') {
+      if (nearest.kind === 'coin') {
+        label = `Coins +${nearest.value}`;
+      } else if (nearest.kind === 'heart') {
         label = `Heart\nRestores ${nearest.heal} HP.`;
+        if (nearest.cost > 0) label += `\nCost: ${nearest.cost} coins`;
       } else {
         const item = getItem(nearest.itemId);
-        if (item) label = `${item.name}\n${item.description}`;
+        if (item) {
+          label = `${item.name}\n${item.description}`;
+          if (nearest.cost > 0) label += `\nCost: ${nearest.cost} coins`;
+        }
       }
       if (label) {
         this.tooltip

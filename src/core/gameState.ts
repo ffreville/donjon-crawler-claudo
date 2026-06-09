@@ -7,6 +7,7 @@ import {
 } from './dungeon.js';
 import {
   ENEMY_ARCHETYPES,
+  makeCoin,
   makeEnemy,
   makeHeart,
   makePickup,
@@ -75,6 +76,9 @@ const BOSS_HP_PER_FLOOR = 15;
 export const HEART_DROP_CHANCE = 0.3;
 export const HEART_HEAL = 1;
 
+/** Coins: combat rooms drop 1..COIN_DROP_MAX coins; the shop sells with these. */
+export const COIN_DROP_MAX = 3;
+
 /** Shooter-enemy projectile tuning. */
 export const ENEMY_SHOT_SPEED = 7;
 export const ENEMY_SHOT_DAMAGE = 1;
@@ -104,6 +108,8 @@ export interface Player extends Combatant {
   items: string[];
   /** Statuses the player's tears apply on hit (from items). */
   tearEffects: StatusSpec[];
+  /** Currency for the shop. */
+  coins: number;
   /** Seconds until the player can fire again. */
   fireCooldown: number;
   /** Seconds of remaining invulnerability. */
@@ -208,6 +214,7 @@ export function createGame(seed: number, opts: NewGameOptions = {}): GameState {
     fireRate: PLAYER_FIRE_RATE,
     items: [],
     tearEffects: [],
+    coins: 0,
     fireCooldown: 0,
     invuln: 0,
     hp: 6,
@@ -290,10 +297,25 @@ export function populateRoom(state: GameState, roomId: RoomId, forcedCount?: num
 
   const center: Vec2 = { x: ROOM_W / 2, y: ROOM_H / 2 };
 
-  // A treasure room offers one item to collect, chosen deterministically.
+  // A treasure room offers one item to collect for free, chosen deterministically.
   if (forcedCount === undefined && room.type === 'treasure' && ITEM_POOL.length > 0) {
     const itemId = rng.pick(ITEM_POOL);
     rt.pickups.push(makePickup(state.nextEntityId++, center, itemId));
+  }
+
+  // A shop offers priced stock: two items and a heart, spread across the room.
+  // Kept off the vertical center so the (no-door) center spawn never lands on stock.
+  if (forcedCount === undefined && room.type === 'shop' && ITEM_POOL.length > 0) {
+    const stock = rng.shuffle(ITEM_POOL).slice(0, 2);
+    const slots = [4, ROOM_W / 2, ROOM_W - 4];
+    const shopY = center.y - 1.5;
+    stock.forEach((itemId, i) => {
+      const cost = rng.range(10, 16);
+      rt.pickups.push(makePickup(state.nextEntityId++, { x: slots[i]!, y: shopY }, itemId, cost));
+    });
+    rt.pickups.push(
+      makeHeart(state.nextEntityId++, { x: slots[2]!, y: shopY }, HEART_HEAL, rng.range(4, 6)),
+    );
   }
 
   let count: number;
@@ -406,13 +428,20 @@ function stepPickups(state: GameState): void {
     const pickup = state.pickups[i]!;
     if (!circlesOverlap(player.pos, player.radius, pickup.pos, pickup.radius)) continue;
 
-    if (pickup.kind === 'heart') {
+    if (pickup.kind === 'coin') {
+      player.coins += pickup.value;
+      state.pickups.splice(i, 1);
+    } else if (pickup.kind === 'heart') {
       if (player.hp >= player.maxHp) continue; // leave it on the ground when full
+      if (player.coins < pickup.cost) continue; // can't afford (shop)
+      player.coins -= pickup.cost;
       heal(player, pickup.heal);
       state.pickups.splice(i, 1);
     } else {
+      if (player.coins < pickup.cost) continue; // can't afford (shop)
       const item = getItem(pickup.itemId);
       if (item) applyItem(player, item);
+      player.coins -= pickup.cost;
       state.pickups.splice(i, 1);
     }
   }
@@ -586,6 +615,10 @@ function stepRoomClear(state: GameState): void {
         makeHeart(state.nextEntityId++, { x: ROOM_W / 2, y: ROOM_H / 2 }, HEART_HEAL),
       );
     }
+    // Always drop a little money so the shop is reachable. Heart roll is drawn
+    // first above, so adding coins here doesn't change existing heart outcomes.
+    const value = rng.range(1, COIN_DROP_MAX);
+    state.pickups.push(makeCoin(state.nextEntityId++, { x: ROOM_W / 2 + 1.5, y: ROOM_H / 2 }, value));
   }
 }
 
