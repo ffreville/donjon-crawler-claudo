@@ -7,7 +7,7 @@ export interface Vec2 {
 
 export type RoomId = number;
 
-export type RoomType = 'start' | 'normal' | 'treasure' | 'boss' | 'shop';
+export type RoomType = 'start' | 'normal' | 'treasure' | 'boss' | 'shop' | 'miniboss';
 
 export interface Room {
   id: RoomId;

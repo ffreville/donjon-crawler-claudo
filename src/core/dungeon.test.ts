@@ -29,59 +29,44 @@ describe('generateDungeon', () => {
     expect(a.bossRoom).toBe(b.bossRoom);
   });
 
-  it('places a shop on an eligible leaf, distinct from start/boss/treasure', () => {
-    // Scan seeds for a floor where a shop is placed, then assert its invariants.
-    // With a roomy map most seeds leave at least two free leaves.
-    let foundShop = false;
-    for (let seed = 0; seed < 50; seed++) {
+  const countByType = (d: ReturnType<typeof generateDungeon>, t: string): number =>
+    [...d.rooms.values()].filter((r) => r.type === t).length;
+
+  it('guarantees one boss, one shop, one mini-boss, and 1–2 treasures per floor', () => {
+    for (let seed = 0; seed < 40; seed++) {
       const d = generateDungeon(new Rng(seed), { roomCount: 12, mapSize: 11 });
-      const shops = [...d.rooms.values()].filter((r) => r.type === 'shop');
-      if (shops.length === 0) continue;
-      foundShop = true;
-
-      // At most one shop per floor.
-      expect(shops.length).toBe(1);
-      const shop = shops[0]!;
-
-      // Distinct from start and boss.
-      expect(shop.id).not.toBe(d.startRoom);
-      expect(shop.id).not.toBe(d.bossRoom);
-
-      // Distinct from the treasure room (no overlap in type).
-      expect(shop.type).toBe('shop');
-      expect(d.rooms.get(d.startRoom)?.type).toBe('start');
-      expect(d.rooms.get(d.bossRoom)?.type).toBe('boss');
-
-      // A shop is a leaf room (exactly one neighbor).
-      expect(shop.neighbors.length).toBe(1);
+      expect(countByType(d, 'start')).toBe(1);
+      expect(countByType(d, 'boss')).toBe(1);
+      expect(countByType(d, 'shop')).toBe(1);
+      expect(countByType(d, 'miniboss')).toBe(1);
+      const treasures = countByType(d, 'treasure');
+      expect(treasures).toBeGreaterThanOrEqual(1);
+      expect(treasures).toBeLessThanOrEqual(2);
     }
-    expect(foundShop).toBe(true);
   });
 
-  it('places at least one shop on a roomy floor', () => {
-    const d = generateDungeon(new Rng(2), { roomCount: 12, mapSize: 11 });
-    const shops = [...d.rooms.values()].filter((r) => r.type === 'shop');
-    expect(shops.length).toBe(1);
+  it('special rooms are distinct and never the start; bossRoom is the boss', () => {
+    const d = generateDungeon(new Rng(7), { roomCount: 12, mapSize: 11 });
+    const specials = [...d.rooms.values()].filter((r) => r.type !== 'normal' && r.type !== 'start');
+    const ids = specials.map((r) => r.id);
+    expect(new Set(ids).size).toBe(ids.length); // no room has two roles
+    expect(ids).not.toContain(d.startRoom);
+    expect(d.rooms.get(d.bossRoom)?.type).toBe('boss');
   });
 
-  it('shop placement is deterministic for a given seed', () => {
-    const a = generateDungeon(new Rng(2), { roomCount: 12, mapSize: 11 });
-    const b = generateDungeon(new Rng(2), { roomCount: 12, mapSize: 11 });
-    const shopA = [...a.rooms.values()].find((r) => r.type === 'shop')?.id;
-    const shopB = [...b.rooms.values()].find((r) => r.type === 'shop')?.id;
-    expect(shopA).toBe(shopB);
-    expect(shopA).not.toBeUndefined();
+  it('degrades gracefully on a tiny floor (no crash, still one start and boss)', () => {
+    const d = generateDungeon(new Rng(0), { roomCount: 4, mapSize: 7 });
+    expect(countByType(d, 'start')).toBe(1);
+    expect(countByType(d, 'boss')).toBe(1);
+    expect(isConnected(d)).toBe(true);
   });
 
-  it('never produces more than one shop, treasure, or boss', () => {
-    for (let seed = 0; seed < 50; seed++) {
-      const d = generateDungeon(new Rng(seed), { roomCount: 10, mapSize: 11 });
-      const count = (t: string): number =>
-        [...d.rooms.values()].filter((r) => r.type === t).length;
-      expect(count('boss')).toBeLessThanOrEqual(1);
-      expect(count('treasure')).toBeLessThanOrEqual(1);
-      expect(count('shop')).toBeLessThanOrEqual(1);
-    }
+  it('special-room layout is deterministic for a given seed', () => {
+    const sig = (d: ReturnType<typeof generateDungeon>): string =>
+      [...d.rooms.values()].map((r) => `${r.id}:${r.type}`).join('|');
+    expect(sig(generateDungeon(new Rng(3), { roomCount: 12, mapSize: 11 }))).toBe(
+      sig(generateDungeon(new Rng(3), { roomCount: 12, mapSize: 11 })),
+    );
   });
 
   it('neighbor links are symmetric', () => {

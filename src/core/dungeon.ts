@@ -8,7 +8,7 @@ export interface DungeonOptions {
   mapSize: number;
 }
 
-export const DEFAULT_DUNGEON: DungeonOptions = { roomCount: 8, mapSize: 9 };
+export const DEFAULT_DUNGEON: DungeonOptions = { roomCount: 10, mapSize: 11 };
 
 const NEIGHBOR_OFFSETS = [
   { x: 0, y: -1 },
@@ -20,8 +20,9 @@ const NEIGHBOR_OFFSETS = [
 /**
  * Generates a connected dungeon via a random walk that branches from already
  * placed rooms. Fully deterministic given `rng`. The room farthest (in graph
- * distance) from the start becomes the boss; one other leaf becomes treasure,
- * and a further leaf (if one remains) becomes a shop.
+ * distance) from the start becomes the boss; the remaining special rooms — one
+ * mini-boss, one shop, and 1–2 treasures — are placed on dead-ends where
+ * possible. Everything else is a normal (combat) room.
  */
 export function generateDungeon(rng: Rng, opts: DungeonOptions = DEFAULT_DUNGEON): Dungeon {
   const { roomCount, mapSize } = opts;
@@ -87,29 +88,27 @@ export function generateDungeon(rng: Rng, opts: DungeonOptions = DEFAULT_DUNGEON
   const boss = rooms.get(bossId);
   if (boss && boss.id !== start.id) boss.type = 'boss';
 
-  // Treasure = a leaf room (one neighbor) that isn't start or boss, if any.
-  const leaves = [...rooms.values()].filter(
-    (r) => r.neighbors.length === 1 && r.id !== start.id && r.id !== bossId,
-  );
-  if (leaves.length > 0) {
-    const treasure = rng.pick(leaves);
-    treasure.type = 'treasure';
-  }
-
-  // Shop = one more leaf room, distinct from start/boss/treasure. We re-derive
-  // eligible leaves so a room just claimed as treasure is excluded. If none
-  // remain, simply place no shop (the floor is still valid).
-  const shopLeaves = [...rooms.values()].filter(
-    (r) =>
-      r.neighbors.length === 1 &&
-      r.id !== start.id &&
-      r.id !== bossId &&
-      r.type === 'normal',
-  );
-  if (shopLeaves.length > 0) {
-    const shop = rng.pick(shopLeaves);
-    shop.type = 'shop';
-  }
+  // Assign the remaining special rooms. Dead-ends (leaves) are preferred so the
+  // specials sit off the main path, with branch rooms as fallback. The full set
+  // (one mini-boss, one shop, 1–2 treasures) is placed as long as there are
+  // enough non-start/non-boss rooms — true for DEFAULT_DUNGEON and every scaled
+  // floor; on a tiny floor `claim()` degrades gracefully (places what fits).
+  const others = [...rooms.values()].filter((r) => r.id !== start.id && r.id !== bossId);
+  const leaves = rng.shuffle(others.filter((r) => r.neighbors.length === 1));
+  const branches = rng.shuffle(others.filter((r) => r.neighbors.length > 1));
+  const pool = [...leaves, ...branches];
+  let pi = 0;
+  const claim = (type: RoomType): void => {
+    const room = pool[pi];
+    if (room) {
+      room.type = type;
+      pi++;
+    }
+  };
+  claim('miniboss');
+  claim('shop');
+  const treasureCount = rng.range(1, 2);
+  for (let t = 0; t < treasureCount; t++) claim('treasure');
 
   return { rooms, startRoom: start.id, bossRoom: bossId };
 }

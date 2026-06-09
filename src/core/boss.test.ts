@@ -58,6 +58,19 @@ describe('boss', () => {
     expect(s.doorsOpen).toBe(true);
   });
 
+  it('a mini-boss room spawns a single, weaker boss-pattern enemy', () => {
+    const s = createGame(1);
+    const mini = [...s.dungeon.rooms.values()].find((r) => r.type === 'miniboss');
+    expect(mini).toBeDefined();
+    enterRoom(s, mini!.id);
+    expect(s.enemies).toHaveLength(1);
+    expect(s.enemies[0]!.kind).toBe('boss'); // reuses the boss attack patterns
+    expect(s.doorsOpen).toBe(false);
+
+    const floorBoss = enterBoss(1).enemies[0]!;
+    expect(s.enemies[0]!.maxHp).toBeLessThan(floorBoss.maxHp);
+  });
+
   it('is deterministic for a given seed', () => {
     const run = (): string => {
       const s = enterBoss(3);

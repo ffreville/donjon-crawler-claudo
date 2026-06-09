@@ -70,4 +70,11 @@ describe('floors', () => {
   it('has at least 2 floors configured', () => {
     expect(MAX_FLOORS).toBeGreaterThanOrEqual(2);
   });
+
+  it('deeper floors have more rooms', () => {
+    const s = createGame(5);
+    const f1 = s.dungeon.rooms.size;
+    descendToNextFloor(s);
+    expect(s.dungeon.rooms.size).toBeGreaterThan(f1);
+  });
 });

@@ -75,9 +75,14 @@ export const MAX_FLOORS = 3;
 
 /** Difficulty scaling per floor (floor 1 = base values). */
 export const ENEMY_HP_PER_FLOOR = 2;
+/** Extra rooms / map size added per floor (more combat rooms deeper in). */
+const ROOMS_PER_FLOOR = 3;
+const MAPSIZE_PER_FLOOR = 2;
 const ENEMIES_PER_FLOOR = 1;
 const BOSS_HP_BASE = 30;
 const BOSS_HP_PER_FLOOR = 15;
+const MINIBOSS_HP_BASE = 16;
+const MINIBOSS_HP_PER_FLOOR = 8;
 
 /** Chance that clearing a combat room drops a healing heart, and how much it heals. */
 export const HEART_DROP_CHANCE = 0.3;
@@ -281,7 +286,14 @@ export function createGame(seed: number, opts: NewGameOptions = {}): GameState {
  */
 function buildFloor(state: GameState, floor: number, startEnemies: number): void {
   state.floor = floor;
-  state.dungeon = generateDungeon(new Rng(floorSeed(state.seed, floor)), state.dungeonOpts);
+  // Bigger floors deeper in: more rooms means more combat rooms (specials stay
+  // a fixed handful), on a proportionally larger map so the walk has room.
+  const tier = floor - 1;
+  const opts = {
+    roomCount: state.dungeonOpts.roomCount + tier * ROOMS_PER_FLOOR,
+    mapSize: state.dungeonOpts.mapSize + tier * MAPSIZE_PER_FLOOR,
+  };
+  state.dungeon = generateDungeon(new Rng(floorSeed(state.seed, floor)), opts);
   state.roomRuntimes = new Map();
   for (const id of state.dungeon.rooms.keys()) {
     state.roomRuntimes.set(id, { enemies: [], pickups: [], spawned: false });
@@ -323,6 +335,21 @@ export function populateRoom(state: GameState, roomId: RoomId, forcedCount?: num
   }
 
   const center: Vec2 = { x: ROOM_W / 2, y: ROOM_H / 2 };
+
+  // A mini-boss: a smaller boss-pattern enemy at the room center (away from any
+  // door the player enters by). No teleporter — only the floor boss drops that.
+  if (forcedCount === undefined && room.type === 'miniboss') {
+    rt.enemies.push(
+      makeEnemy(state.nextEntityId++, center, {
+        kind: 'boss',
+        hp: MINIBOSS_HP_BASE + tier * MINIBOSS_HP_PER_FLOOR,
+        radius: 0.55,
+        speed: 1.6,
+        touchDamage: 2,
+      }),
+    );
+    return;
+  }
 
   // A treasure room offers one item to collect for free, chosen deterministically.
   if (forcedCount === undefined && room.type === 'treasure' && ITEM_POOL.length > 0) {
@@ -764,7 +791,7 @@ function stepRoomClear(state: GameState): void {
   // Combat rooms (not the boss) may drop a healing heart. The roll is a pure
   // function of (seed, floor, roomId), so it fires at most once per room and is
   // reproducible — no shared RNG consumed in tick().
-  if (room && room.type === 'normal') {
+  if (room && (room.type === 'normal' || room.type === 'miniboss')) {
     const rng = new Rng(rewardSeed(state.seed, state.floor, state.currentRoom));
     if (rng.chance(HEART_DROP_CHANCE)) {
       state.pickups.push(

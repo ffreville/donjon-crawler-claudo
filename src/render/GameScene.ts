@@ -3,6 +3,7 @@ import {
   createGame,
   FIXED_DT,
   getItem,
+  doorWorldPos,
   isWall,
   ROOM_W,
   TELEPORTER_POS,
@@ -12,6 +13,7 @@ import {
   type GameState,
   type InputState,
   type PickupKind,
+  type RoomType,
 } from '../core/index.js';
 import { createButton, getShowStats, PALETTE } from './ui.js';
 
@@ -549,12 +551,14 @@ export class GameScene extends Phaser.Scene {
     const ox = ROOM_W * TILE + 12;
     const oy = 26;
 
-    const typeColor: Record<string, number> = {
+    // Record<RoomType,…> so a future room type is a compile error until colored.
+    const typeColor: Record<RoomType, number> = {
       start: 0x46d369,
       normal: 0x6b7280,
       treasure: 0xffd23f,
       shop: 0x4ad6c8,
       boss: 0xe5484d,
+      miniboss: 0xff9f43,
     };
 
     for (const room of rooms) {
@@ -625,7 +629,7 @@ export class GameScene extends Phaser.Scene {
 
   private drawRoom(): void {
     this.tiles.clear(true, true);
-    const { grid } = this.state;
+    const { grid, dungeon } = this.state;
     for (let y = 0; y < grid.height; y++) {
       for (let x = 0; x < grid.width; x++) {
         const color = isWall(grid, x, y) ? 0x2a2a3a : 0x1b1b26;
@@ -634,6 +638,19 @@ export class GameScene extends Phaser.Scene {
           .setStrokeStyle(1, 0x0f0f16);
         this.tiles.add(tile);
       }
+    }
+
+    // Mark doors that lead to a boss / mini-boss room so the player is warned.
+    for (const door of this.state.doors) {
+      const neighborType = dungeon.rooms.get(door.to)?.type;
+      const markColor =
+        neighborType === 'boss' ? 0xe5484d : neighborType === 'miniboss' ? 0xff9f43 : undefined;
+      if (markColor === undefined) continue;
+      const o = doorWorldPos(grid, door.dir);
+      const mark = this.add
+        .rectangle(o.x * TILE, o.y * TILE, TILE * 0.5, TILE * 0.5, markColor)
+        .setDepth(3);
+      this.tiles.add(mark);
     }
   }
 }
