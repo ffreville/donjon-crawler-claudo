@@ -9,6 +9,7 @@ import {
   TELEPORTER_POS,
   TELEPORTER_RADIUS,
   tick,
+  type Enemy,
   type EnemyKind,
   type GameState,
   type InputState,
@@ -36,7 +37,17 @@ const PICKUP_COLORS: Record<PickupKind, number> = {
   item: 0x4ad6c8,
   heart: 0xff6b81,
   coin: 0xffd23f,
+  key: 0xe6e6f5,
 };
+
+/** Boss fill color per attack-pattern variant. */
+const BOSS_VARIANT_COLORS = [0xd6409f, 0x9b59ff, 0xff5d5d];
+
+/** The fill color for an enemy: boss colors vary by pattern variant. */
+function enemyColor(e: Enemy): number {
+  if (e.kind === 'boss') return BOSS_VARIANT_COLORS[e.bossVariant] ?? 0xd6409f;
+  return ENEMY_COLORS[e.kind];
+}
 
 /** Max simulation steps per frame, so a stalled tab can't trigger a death spiral. */
 const MAX_STEPS_PER_FRAME = 5;
@@ -360,7 +371,7 @@ export class GameScene extends Phaser.Scene {
     const type = dungeon.rooms.get(currentRoom)?.type ?? '?';
     const lock = doorsOpen ? '' : '  [LOCKED]';
     this.hud.setText(
-      `HP ${player.hp}/${player.maxHp}   coins ${player.coins}   floor ${this.state.floor}   room: ${type}${lock}   enemies ${this.state.enemies.length}`,
+      `HP ${player.hp}/${player.maxHp}   coins ${player.coins}   keys ${player.keys}   floor ${this.state.floor}   room: ${type}${lock}   enemies ${this.state.enemies.length}`,
     );
 
     this.statsPanel.setVisible(getShowStats(this)); // reflect the Options toggle live
@@ -393,10 +404,11 @@ export class GameScene extends Phaser.Scene {
     const live = new Set<number>();
     for (const e of this.state.enemies) {
       live.add(e.id);
+      const baseColor = enemyColor(e);
       let sprite = this.enemySprites.get(e.id);
       if (!sprite) {
         const size = e.radius * 2 * TILE;
-        sprite = this.add.rectangle(0, 0, size, size, ENEMY_COLORS[e.kind]).setDepth(5);
+        sprite = this.add.rectangle(0, 0, size, size, baseColor).setDepth(5);
         this.enemySprites.set(e.id, sprite);
       }
       sprite.setPosition(e.pos.x * TILE, e.pos.y * TILE);
@@ -409,7 +421,7 @@ export class GameScene extends Phaser.Scene {
           this.spawnDamageNumber(e.pos.x * TILE, e.pos.y * TILE, dmg);
           sprite.setFillStyle(0xffffff);
           this.time.delayedCall(60, () => {
-            if (sprite.active) sprite.setFillStyle(ENEMY_COLORS[e.kind]);
+            if (sprite.active) sprite.setFillStyle(baseColor);
           });
         }
       }
@@ -475,7 +487,7 @@ export class GameScene extends Phaser.Scene {
       sprite.setPosition(pk.pos.x * TILE, pk.pos.y * TILE);
 
       // Price tag under priced (shop) pickups.
-      const cost = pk.kind === 'coin' ? 0 : pk.cost;
+      const cost = pk.kind === 'item' || pk.kind === 'heart' ? pk.cost : 0;
       if (cost > 0) {
         let label = this.priceLabels.get(pk.id);
         if (!label) {
@@ -509,6 +521,8 @@ export class GameScene extends Phaser.Scene {
       let label: string | undefined;
       if (nearest.kind === 'coin') {
         label = `Coins +${nearest.value}`;
+      } else if (nearest.kind === 'key') {
+        label = 'Key +1';
       } else if (nearest.kind === 'heart') {
         label = `Heart\nRestores ${nearest.heal} HP.`;
         if (nearest.cost > 0) label += `\nCost: ${nearest.cost} coins`;
@@ -546,10 +560,20 @@ export class GameScene extends Phaser.Scene {
 
     const minGx = Math.min(...rooms.map((r) => r.gx));
     const minGy = Math.min(...rooms.map((r) => r.gy));
-    const cell = 13;
-    const gap = 3;
+    const maxGx = Math.max(...rooms.map((r) => r.gx));
+    const maxGy = Math.max(...rooms.map((r) => r.gy));
+    const cols = maxGx - minGx + 1;
+    const rows = maxGy - minGy + 1;
     const ox = ROOM_W * TILE + 12;
     const oy = 26;
+    // Scale cells so the whole map fits the side strip even on big late floors.
+    const gap = 2;
+    const avail = PANEL_W - 20;
+    const maxH = 150;
+    const cell = Math.max(
+      3,
+      Math.min(13, Math.floor(avail / cols) - gap, Math.floor(maxH / rows) - gap),
+    );
 
     // Record<RoomType,…> so a future room type is a compile error until colored.
     const typeColor: Record<RoomType, number> = {

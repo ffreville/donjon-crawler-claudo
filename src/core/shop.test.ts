@@ -40,7 +40,9 @@ describe('shop', () => {
     const s = createGame(seed);
     enterRoom(s, shopId);
     expect(s.pickups.length).toBeGreaterThanOrEqual(2);
-    expect(s.pickups.every((p) => (p.kind === 'coin' ? true : p.cost > 0))).toBe(true);
+    expect(
+      s.pickups.every((p) => (p.kind === 'item' || p.kind === 'heart' ? p.cost > 0 : true)),
+    ).toBe(true);
   });
 
   it('refuses purchase without enough coins, and buys when affordable', () => {
@@ -73,7 +75,12 @@ describe('shop', () => {
     enterRoom(a, shopId);
     enterRoom(b, shopId);
     const sig = (s: GameState): string =>
-      s.pickups.map((p) => `${p.kind}:${p.kind === 'coin' ? p.value : p.cost}`).join('|');
+      s.pickups
+        .map((p) => {
+          const detail = p.kind === 'coin' ? p.value : p.kind === 'key' ? 0 : p.cost;
+          return `${p.kind}:${detail}`;
+        })
+        .join('|');
     expect(sig(a)).toBe(sig(b));
   });
 });

@@ -6,6 +6,10 @@ export interface DungeonOptions {
   roomCount: number;
   /** Size of the square map grid the rooms are placed on. */
   mapSize: number;
+  /** How many treasure (item) rooms to place (default 1). */
+  treasureRooms?: number;
+  /** How many mini-boss rooms to place (default 1). */
+  minibossRooms?: number;
 }
 
 export const DEFAULT_DUNGEON: DungeonOptions = { roomCount: 10, mapSize: 11 };
@@ -105,10 +109,11 @@ export function generateDungeon(rng: Rng, opts: DungeonOptions = DEFAULT_DUNGEON
       pi++;
     }
   };
-  claim('miniboss');
+  const minibossRooms = opts.minibossRooms ?? 1;
+  const treasureRooms = opts.treasureRooms ?? 1;
+  for (let m = 0; m < minibossRooms; m++) claim('miniboss');
   claim('shop');
-  const treasureCount = rng.range(1, 2);
-  for (let t = 0; t < treasureCount; t++) claim('treasure');
+  for (let t = 0; t < treasureRooms; t++) claim('treasure');
 
   return { rooms, startRoom: start.id, bossRoom: bossId };
 }

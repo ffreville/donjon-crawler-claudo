@@ -45,6 +45,19 @@ describe('generateDungeon', () => {
     }
   });
 
+  it('honors requested treasure and mini-boss counts', () => {
+    const d = generateDungeon(new Rng(1), {
+      roomCount: 18,
+      mapSize: 13,
+      treasureRooms: 3,
+      minibossRooms: 2,
+    });
+    expect(countByType(d, 'treasure')).toBe(3);
+    expect(countByType(d, 'miniboss')).toBe(2);
+    expect(countByType(d, 'shop')).toBe(1);
+    expect(countByType(d, 'boss')).toBe(1);
+  });
+
   it('special rooms are distinct and never the start; bossRoom is the boss', () => {
     const d = generateDungeon(new Rng(7), { roomCount: 12, mapSize: 11 });
     const specials = [...d.rooms.values()].filter((r) => r.type !== 'normal' && r.type !== 'start');

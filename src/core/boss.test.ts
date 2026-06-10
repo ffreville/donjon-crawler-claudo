@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { createGame, enterRoom, FIXED_DT, NO_INPUT, tick, type GameState } from './gameState.js';
+import {
+  createGame,
+  descendToNextFloor,
+  enterRoom,
+  FIXED_DT,
+  NO_INPUT,
+  tick,
+  type GameState,
+} from './gameState.js';
 
 const enterBoss = (seed: number): GameState => {
   const s = createGame(seed);
@@ -69,6 +77,45 @@ describe('boss', () => {
 
     const floorBoss = enterBoss(1).enemies[0]!;
     expect(s.enemies[0]!.maxHp).toBeLessThan(floorBoss.maxHp);
+  });
+
+  it('has three attack-pattern variants with distinct openers', () => {
+    const opener = (variant: number): number => {
+      const s = enterBoss(1);
+      const boss = s.enemies[0]!;
+      boss.bossVariant = variant;
+      boss.hp = boss.maxHp; // phase 1
+      s.projectiles.length = 0;
+      boss.fireCooldown = 0;
+      s.graceTimer = 0;
+      tick(s, NO_INPUT, FIXED_DT);
+      return s.projectiles.length;
+    };
+    expect(opener(0)).toBe(8); // bombardier: 8-way radial
+    expect(opener(1)).toBe(3); // spiral: 3 arms
+    expect(opener(2)).toBe(3); // barrage: aimed 3-spread
+    // ...and they diverge in the final phase.
+    const low = (variant: number): number => {
+      const s = enterBoss(1);
+      const boss = s.enemies[0]!;
+      boss.bossVariant = variant;
+      boss.hp = Math.round(boss.maxHp * 0.2);
+      s.projectiles.length = 0;
+      boss.fireCooldown = 0;
+      s.graceTimer = 0;
+      tick(s, NO_INPUT, FIXED_DT);
+      return s.projectiles.length;
+    };
+    expect(new Set([low(0), low(1), low(2)]).size).toBe(3); // 12 / 5 / 17
+  });
+
+  it('the floor boss variant cycles with the floor', () => {
+    const s = createGame(1);
+    enterRoom(s, s.dungeon.bossRoom);
+    expect(s.enemies[0]!.bossVariant).toBe(0); // floor 1
+    descendToNextFloor(s);
+    enterRoom(s, s.dungeon.bossRoom);
+    expect(s.enemies[0]!.bossVariant).toBe(1); // floor 2
   });
 
   it('is deterministic for a given seed', () => {

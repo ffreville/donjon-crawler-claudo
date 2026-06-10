@@ -26,6 +26,10 @@ export interface Enemy extends Combatant {
   effects: StatusEffect[];
   /** Decaying recoil velocity from being hit (tiles/second). */
   knockback: Vec2;
+  /** Boss attack-pattern variant (0,1,2); ignored by non-boss kinds. */
+  bossVariant: number;
+  /** Boss spiral accumulator (radians); ignored by non-boss kinds. */
+  bossSpin: number;
 }
 
 export type ProjectileSource = 'player' | 'enemy';
@@ -67,7 +71,7 @@ export interface Projectile {
   hits: number[];
 }
 
-export type PickupKind = 'item' | 'heart' | 'coin';
+export type PickupKind = 'item' | 'heart' | 'coin' | 'key';
 
 interface PickupBase {
   id: number;
@@ -95,11 +99,16 @@ export interface CoinPickup extends PickupBase {
   value: number;
 }
 
+/** A pickup that grants one key. Always free to grab. */
+export interface KeyPickup extends PickupBase {
+  kind: 'key';
+}
+
 /**
  * A collectible lying in a room, picked up on contact. Discriminated on `kind`
  * so the compiler guarantees the right payload fields are present.
  */
-export type Pickup = ItemPickup | HeartPickup | CoinPickup;
+export type Pickup = ItemPickup | HeartPickup | CoinPickup | KeyPickup;
 
 export function makePickup(
   id: number,
@@ -117,6 +126,10 @@ export function makeHeart(id: number, pos: Vec2, heal = 1, cost = 0, radius = 0.
 
 export function makeCoin(id: number, pos: Vec2, value = 1, radius = 0.25): CoinPickup {
   return { id, pos: { x: pos.x, y: pos.y }, radius, kind: 'coin', value };
+}
+
+export function makeKey(id: number, pos: Vec2, radius = 0.25): KeyPickup {
+  return { id, pos: { x: pos.x, y: pos.y }, radius, kind: 'key' };
 }
 
 export interface EnemyStats {
@@ -153,6 +166,8 @@ export function makeEnemy(id: number, pos: Vec2, stats: EnemyStats = {}): Enemy 
     fireCooldown: 0,
     effects: [],
     knockback: { x: 0, y: 0 },
+    bossVariant: 0,
+    bossSpin: 0,
     hp,
     maxHp: hp,
     attack: stats.attack ?? base.attack,

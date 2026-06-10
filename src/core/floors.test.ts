@@ -67,8 +67,8 @@ describe('floors', () => {
     expect(a.dungeon.bossRoom).toBe(b.dungeon.bossRoom);
   });
 
-  it('has at least 2 floors configured', () => {
-    expect(MAX_FLOORS).toBeGreaterThanOrEqual(2);
+  it('takes 10 floors to finish the game', () => {
+    expect(MAX_FLOORS).toBe(10);
   });
 
   it('deeper floors have more rooms', () => {
@@ -76,5 +76,17 @@ describe('floors', () => {
     const f1 = s.dungeon.rooms.size;
     descendToNextFloor(s);
     expect(s.dungeon.rooms.size).toBeGreaterThan(f1);
+  });
+
+  it('scales treasure and mini-boss rooms with depth', () => {
+    const s = createGame(9);
+    const count = (t: string): number =>
+      [...s.dungeon.rooms.values()].filter((r) => r.type === t).length;
+    expect(count('treasure')).toBe(1); // floor 1
+    expect(count('miniboss')).toBe(1);
+    for (let i = 0; i < 6; i++) descendToNextFloor(s); // floor 7
+    expect(s.floor).toBe(7);
+    expect(count('treasure')).toBe(3); // late floors: 3 item rooms
+    expect(count('miniboss')).toBe(2);
   });
 });

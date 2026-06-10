@@ -10,6 +10,7 @@ import {
   makeCoin,
   makeEnemy,
   makeHeart,
+  makeKey,
   makePickup,
   makeProjectile,
   type Enemy,
@@ -71,7 +72,7 @@ export const TELEPORTER_POS: Vec2 = { x: ROOM_W / 2, y: 2.5 };
 export const TELEPORTER_RADIUS = 0.5;
 
 /** Number of floors to clear; reaching the teleporter on the last one wins. */
-export const MAX_FLOORS = 3;
+export const MAX_FLOORS = 10;
 
 /** Difficulty scaling per floor (floor 1 = base values). */
 export const ENEMY_HP_PER_FLOOR = 2;
@@ -90,6 +91,9 @@ export const HEART_HEAL = 1;
 
 /** Coins: combat rooms drop 1..COIN_DROP_MAX coins; the shop sells with these. */
 export const COIN_DROP_MAX = 3;
+
+/** Keys: a cleared combat room drops one with this chance (use TBD; tunable). */
+export const KEY_DROP_CHANCE = 0.35;
 
 /** Traps: a fraction of normal rooms get spikes; each deals TRAP_DAMAGE on contact. */
 export const TRAP_ROOM_CHANCE = 0.4;
@@ -111,6 +115,8 @@ const SHOOTER_FIRE_RANGE = 8;
 const BOSS_SHOT_SPEED = 6;
 const BOSS_SHOT_DAMAGE = 1;
 const BOSS_SHOT_LIFE = 3;
+/** Number of distinct boss attack-pattern variants. */
+export const BOSS_VARIANTS = 3;
 
 /** Synergy: an enemy that is both burning and slowed takes extra burn damage. */
 export const BURN_SLOW_SYNERGY = 1.5;
@@ -145,6 +151,8 @@ export interface Player extends Combatant {
   homing: boolean;
   /** Currency for the shop. */
   coins: number;
+  /** Keys collected (use TBD). */
+  keys: number;
   /** Seconds until the player can fire again. */
   fireCooldown: number;
   /** Seconds of remaining invulnerability. */
@@ -259,6 +267,7 @@ export function createGame(seed: number, opts: NewGameOptions = {}): GameState {
     piercing: false,
     homing: false,
     coins: 0,
+    keys: 0,
     fireCooldown: 0,
     invuln: 0,
     hp: 6,
@@ -304,6 +313,9 @@ function buildFloor(state: GameState, floor: number, startEnemies: number): void
   const opts = {
     roomCount: state.dungeonOpts.roomCount + tier * ROOMS_PER_FLOOR,
     mapSize: state.dungeonOpts.mapSize + tier * MAPSIZE_PER_FLOOR,
+    // More loot and more mini-bosses the deeper you go.
+    treasureRooms: floor <= 3 ? 1 : floor <= 6 ? 2 : 3,
+    minibossRooms: floor <= 4 ? 1 : 2,
   };
   state.dungeon = generateDungeon(new Rng(floorSeed(state.seed, floor)), opts);
   state.roomRuntimes = new Map();
@@ -337,12 +349,12 @@ export function populateRoom(state: GameState, roomId: RoomId, forcedCount?: num
   const tier = state.floor - 1; // 0 on floor 1
 
   if (forcedCount === undefined && room.type === 'boss') {
-    rt.enemies.push(
-      makeEnemy(state.nextEntityId++, BOSS_SPAWN, {
-        kind: 'boss',
-        hp: BOSS_HP_BASE + tier * BOSS_HP_PER_FLOOR,
-      }),
-    );
+    const boss = makeEnemy(state.nextEntityId++, BOSS_SPAWN, {
+      kind: 'boss',
+      hp: BOSS_HP_BASE + tier * BOSS_HP_PER_FLOOR,
+    });
+    boss.bossVariant = (state.floor - 1) % BOSS_VARIANTS; // cycle the 3 types across floors
+    rt.enemies.push(boss);
     return;
   }
 
@@ -351,15 +363,17 @@ export function populateRoom(state: GameState, roomId: RoomId, forcedCount?: num
   // A mini-boss: a smaller boss-pattern enemy at the room center (away from any
   // door the player enters by). No teleporter — only the floor boss drops that.
   if (forcedCount === undefined && room.type === 'miniboss') {
-    rt.enemies.push(
-      makeEnemy(state.nextEntityId++, center, {
-        kind: 'boss',
-        hp: MINIBOSS_HP_BASE + tier * MINIBOSS_HP_PER_FLOOR,
-        radius: 0.55,
-        speed: 1.6,
-        touchDamage: 2,
-      }),
-    );
+    const mini = makeEnemy(state.nextEntityId++, center, {
+      kind: 'boss',
+      hp: MINIBOSS_HP_BASE + tier * MINIBOSS_HP_PER_FLOOR,
+      radius: 0.55,
+      speed: 1.6,
+      touchDamage: 2,
+    });
+    // Mini-bosses pick a variant from the room rng (the floor boss cycles by
+    // floor instead) — so a floor can show a different pattern in each.
+    mini.bossVariant = rng.int(BOSS_VARIANTS);
+    rt.enemies.push(mini);
     return;
   }
 
@@ -523,6 +537,9 @@ function stepPickups(state: GameState): void {
     if (pickup.kind === 'coin') {
       player.coins += pickup.value;
       state.pickups.splice(i, 1);
+    } else if (pickup.kind === 'key') {
+      player.keys += 1;
+      state.pickups.splice(i, 1);
     } else if (pickup.kind === 'heart') {
       if (player.hp >= player.maxHp) continue; // leave it on the ground when full
       if (player.coins < pickup.cost) continue; // can't afford (shop)
@@ -607,9 +624,11 @@ function stepEnemies(state: GameState, dt: number, active: boolean): void {
         enemy.fireCooldown = ENEMY_FIRE_INTERVAL;
       }
     } else if (enemy.kind === 'boss') {
-      // Slow advance toward the player; the threat is the bullet patterns.
-      vx = ux * speed * 0.6;
-      vy = uy * speed * 0.6;
+      // Advance toward the player; the threat is the bullet patterns. The barrage
+      // variant (2) is more aggressive on its feet.
+      const advance = enemy.bossVariant === 2 ? 0.95 : 0.6;
+      vx = ux * speed * advance;
+      vy = uy * speed * advance;
       stepBossAttacks(state, enemy, ux, uy, dt);
     } else {
       // chaser / swarmer / tank: walk straight at the player.
@@ -631,26 +650,47 @@ function stepEnemies(state: GameState, dt: number, active: boolean): void {
 }
 
 /**
- * Boss attack patterns, escalating in three phases as its HP drops:
- *  - >66% HP: slow 8-way radial bursts.
- *  - 33–66%: faster aimed 5-tear spread at the player.
- *  - <33%: rapid 12-way radial, offset to fill the gaps.
- * Deterministic: pattern is chosen from HP, timing from a per-boss cooldown.
+ * Boss attack patterns. Three variants, each escalating in three HP phases.
+ * Deterministic: pattern from `bossVariant` + HP ratio, timing from fireCooldown.
+ *  - 0 Bombardier: radial bursts / aimed spread / dense radial.
+ *  - 1 Spiral: frequent small bursts whose base angle rotates each volley.
+ *  - 2 Barrage: aimed "shotgun" at the player, widening, with a panic ring low.
  */
 function stepBossAttacks(state: GameState, boss: Enemy, ux: number, uy: number, dt: number): void {
   boss.fireCooldown = Math.max(0, boss.fireCooldown - dt);
   if (boss.fireCooldown > 0) return;
   const ratio = boss.hp / boss.maxHp;
+  const aim = Math.atan2(uy, ux);
+  if (boss.bossVariant === 1) bossSpiral(state, boss, ratio);
+  else if (boss.bossVariant === 2) bossBarrage(state, boss, aim, ratio);
+  else bossBombardier(state, boss, aim, ratio);
+}
+
+function bossBombardier(state: GameState, boss: Enemy, aim: number, ratio: number): void {
   if (ratio > 0.66) {
     spawnRadial(state, boss.pos, 8, 0);
     boss.fireCooldown = 1.8;
   } else if (ratio > 0.33) {
-    spawnAimed(state, boss.pos, Math.atan2(uy, ux), 5, 0.28);
+    spawnAimed(state, boss.pos, aim, 5, 0.28);
     boss.fireCooldown = 1.3;
   } else {
     spawnRadial(state, boss.pos, 12, Math.PI / 12);
     boss.fireCooldown = 0.9;
   }
+}
+
+function bossSpiral(state: GameState, boss: Enemy, ratio: number): void {
+  const arms = ratio > 0.66 ? 3 : ratio > 0.33 ? 4 : 5;
+  spawnRadial(state, boss.pos, arms, boss.bossSpin);
+  boss.bossSpin += 0.5; // rotate the base angle so successive volleys spiral
+  boss.fireCooldown = ratio > 0.33 ? 0.4 : 0.28;
+}
+
+function bossBarrage(state: GameState, boss: Enemy, aim: number, ratio: number): void {
+  const shots = ratio > 0.66 ? 3 : ratio > 0.33 ? 5 : 7;
+  spawnAimed(state, boss.pos, aim, shots, 0.16);
+  if (ratio <= 0.33) spawnRadial(state, boss.pos, 10, 0); // panic ring when wounded
+  boss.fireCooldown = ratio > 0.33 ? 1.1 : 0.7;
 }
 
 /** Spawns `n` enemy projectiles evenly around a circle, rotated by `offset`. */
@@ -851,6 +891,10 @@ function stepRoomClear(state: GameState): void {
     // first above, so adding coins here doesn't change existing heart outcomes.
     const value = rng.range(1, COIN_DROP_MAX);
     state.pickups.push(makeCoin(state.nextEntityId++, { x: ROOM_W / 2 + 1.5, y: ROOM_H / 2 }, value));
+    // A key may also drop (drawn last, so heart/coin outcomes are unchanged).
+    if (rng.chance(KEY_DROP_CHANCE)) {
+      state.pickups.push(makeKey(state.nextEntityId++, { x: ROOM_W / 2 - 1.5, y: ROOM_H / 2 }));
+    }
   }
 }
 
