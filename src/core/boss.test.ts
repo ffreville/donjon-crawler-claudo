@@ -58,12 +58,25 @@ describe('boss', () => {
     expect(s.player.hp).toBeLessThan(hp0);
   });
 
-  it('defeating the boss drops the teleporter', () => {
+  it('defeating the boss drops the teleporter and a reward item', () => {
     const s = enterBoss(1);
     s.enemies.length = 0;
     tick(s, NO_INPUT, FIXED_DT);
     expect(s.bossDefeated).toBe(true);
     expect(s.doorsOpen).toBe(true);
+    // Floor 1: the bag still has items, so the boss drops a free item.
+    const drop = s.pickups.find((p) => p.kind === 'item');
+    expect(drop).toBeDefined();
+    expect(drop!.kind === 'item' ? drop!.cost : -1).toBe(0); // free
+  });
+
+  it('a mini-boss does NOT drop an item on death', () => {
+    const s = createGame(1);
+    const mini = [...s.dungeon.rooms.values()].find((r) => r.type === 'miniboss')!;
+    enterRoom(s, mini.id);
+    s.enemies.length = 0;
+    tick(s, NO_INPUT, FIXED_DT);
+    expect(s.pickups.some((p) => p.kind === 'item')).toBe(false);
   });
 
   it('a mini-boss room spawns a single, weaker boss-pattern enemy', () => {

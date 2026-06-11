@@ -5,6 +5,7 @@
  */
 
 import type { StatusSpec } from './entities.js';
+import type { Vec2 } from './types.js';
 
 export interface StatModifiers {
   /** Added to max HP; the player is also healed by this amount. */
@@ -15,6 +16,8 @@ export interface StatModifiers {
   tearDamage?: number;
   /** Added to fire rate, in shots/second. */
   fireRate?: number;
+  /** Added to tear range, in tiles. */
+  range?: number;
 }
 
 /** Shaping modifiers an item can grant to the player's tears. */
@@ -23,6 +26,72 @@ export interface TearMods {
   shotCount?: number;
   piercing?: boolean;
   homing?: boolean;
+}
+
+/**
+ * An on-demand effect for a usable ("active") item. The player holds at most one
+ * active item; it charges by clearing rooms and is spent when used.
+ */
+export interface ActiveEffect {
+  /** Rooms that must be cleared to fully recharge after a use. */
+  charge: number;
+  /** On use: heal this many HP (capped at max HP). */
+  heal?: number;
+  /** On use: grant this many coins. */
+  coins?: number;
+  /** On use: reroll the item pickups in the current room (treasure / shop). */
+  reroll?: boolean;
+  /** On use: reveal the whole floor on the minimap (until the next floor). */
+  revealMap?: boolean;
+}
+
+/**
+ * What a familiar does. Droppers leave a pickup every few cleared rooms; shooters
+ * fire at the nearest enemy each tick. Each shooter kind is its own behaviour +
+ * sprite (wisp / owl / hornet).
+ */
+export type FamiliarKind =
+  | 'key-dropper'
+  | 'heart-dropper'
+  | 'coin-dropper'
+  | 'wisp' // steady single shots
+  | 'owl' // slow, heavy, piercing shots
+  | 'hornet'; // rapid weak spread
+
+/** Declarative spec for a familiar an item grants (data; see `Familiar` for runtime state). */
+export interface FamiliarSpec {
+  kind: FamiliarKind;
+  /** Droppers: leave a pickup every this many rooms cleared. */
+  interval?: number;
+  /** Shooters: damage per tear. */
+  damage?: number;
+  /** Shooters: seconds between volleys. */
+  fireInterval?: number;
+  /** Shooters: tears per volley (>1 = spread). */
+  shots?: number;
+  /** Shooters: tears pierce enemies. */
+  piercing?: boolean;
+  /** Shooters: tear travel range, in tiles. */
+  range?: number;
+}
+
+/** A familiar the player owns at runtime. Follows the player and acts each tick/room. */
+export interface Familiar {
+  kind: FamiliarKind;
+  /** Droppers: rooms between drops. */
+  interval: number;
+  /** Droppers: rooms cleared since its last drop. */
+  roomTimer: number;
+  /** Current world position (follows the player; tracked in the core for shooters). */
+  pos: Vec2;
+  /** Shooters: seconds until the next volley. */
+  fireCooldown: number;
+  /** Shooters: damage / cadence / spread / piercing / range (0 for droppers). */
+  damage: number;
+  fireInterval: number;
+  shots: number;
+  piercing: boolean;
+  range: number;
 }
 
 export interface Item {
@@ -34,6 +103,14 @@ export interface Item {
   tearEffect?: StatusSpec;
   /** If set, reshapes how the player fires. */
   tearMods?: TearMods;
+  /** If true, grants flight (immunity to floor traps: spikes and pits). */
+  flying?: boolean;
+  /** If set, this is a usable (active) item held in the single active slot. */
+  active?: ActiveEffect;
+  /** If set, collecting this item grants a following familiar. */
+  familiar?: FamiliarSpec;
+  /** If true, replaces tears with the Knife: a held melee blade you charge to extend. */
+  knife?: boolean;
 }
 
 /** The player fields an item can mutate. `Player` is structurally compatible. */
@@ -42,12 +119,16 @@ export interface MutableStats {
   maxHp: number;
   speed: number;
   tearDamage: number;
+  tearRange: number;
   fireRate: number;
   items: string[];
   tearEffects: StatusSpec[];
   shotCount: number;
   piercing: boolean;
   homing: boolean;
+  flying: boolean;
+  knife: boolean;
+  familiars: Familiar[];
 }
 
 export const ITEMS: Record<string, Item> = {
@@ -61,11 +142,35 @@ export const ITEMS: Record<string, Item> = {
     description: 'Your tears hit harder. +3 damage.',
     modifiers: { tearDamage: 3 },
   },
+  'sharp-tears-xs': {
+    id: 'sharp-tears-xs',
+    name: 'Honed Tears',
+    description: 'Your tears hit a little harder. +1 damage.',
+    modifiers: { tearDamage: 1 },
+  },
+  'sharp-tears-s': {
+    id: 'sharp-tears-s',
+    name: 'Keen Tears',
+    description: 'Your tears hit harder. +2 damage.',
+    modifiers: { tearDamage: 2 },
+  },
   'swift-boots': {
     id: 'swift-boots',
     name: 'Swift Boots',
     description: 'Move faster. +1.5 speed.',
     modifiers: { speed: 1.5 },
+  },
+  spyglass: {
+    id: 'spyglass',
+    name: 'Spyglass',
+    description: 'Your tears fly farther. +1 range.',
+    modifiers: { range: 1 },
+  },
+  telescope: {
+    id: 'telescope',
+    name: 'Telescope',
+    description: 'Your tears fly much farther. +1.5 range.',
+    modifiers: { range: 1.5 },
   },
   'rapid-fire': {
     id: 'rapid-fire',
@@ -78,6 +183,24 @@ export const ITEMS: Record<string, Item> = {
     name: 'Vitality',
     description: 'A larger heart. +2 max HP (and heal).',
     modifiers: { maxHp: 2 },
+  },
+  'small-vitality-1': {
+    id: 'small-vitality-1',
+    name: 'Snack',
+    description: 'A quick bite. +1 max HP (and heal).',
+    modifiers: { maxHp: 1 },
+  },
+  'small-vitality-2': {
+    id: 'small-vitality-2',
+    name: 'Sandwich',
+    description: 'A filling sandwich. +1 max HP (and heal).',
+    modifiers: { maxHp: 1 },
+  },
+  'small-vitality-3': {
+    id: 'small-vitality-3',
+    name: 'Hot Soup',
+    description: 'A warm bowl. +1 max HP (and heal).',
+    modifiers: { maxHp: 1 },
   },
   'fire-tears': {
     id: 'fire-tears',
@@ -121,6 +244,90 @@ export const ITEMS: Record<string, Item> = {
     modifiers: {},
     tearMods: { homing: true },
   },
+  wings: {
+    id: 'wings',
+    name: 'Wings',
+    description: 'You fly over spikes and pits.',
+    modifiers: {},
+    flying: true,
+  },
+  'med-kit': {
+    id: 'med-kit',
+    name: 'Med Kit',
+    description: 'Active: heal 1 HP. Recharges over 3 rooms cleared.',
+    modifiers: {},
+    active: { charge: 3, heal: 1 },
+  },
+  'reroll-die': {
+    id: 'reroll-die',
+    name: 'Reroll Die',
+    description: 'Active: reroll the items in this treasure room or shop. Recharges over 5 rooms.',
+    modifiers: {},
+    active: { charge: 5, reroll: true },
+  },
+  'lucky-coin': {
+    id: 'lucky-coin',
+    name: 'Lucky Coin',
+    description: 'Active: gain 1 coin. Recharges over 1 room cleared.',
+    modifiers: {},
+    active: { charge: 1, coins: 1 },
+  },
+  'dungeon-map': {
+    id: 'dungeon-map',
+    name: 'Dungeon Map',
+    description: 'Active: reveal the whole floor on the minimap. Recharges over 6 rooms.',
+    modifiers: {},
+    active: { charge: 6, revealMap: true },
+  },
+  'flying-key': {
+    id: 'flying-key',
+    name: 'Flying Key',
+    description: 'Familiar: a grey flying key that follows you and drops a key every 3 rooms.',
+    modifiers: {},
+    familiar: { kind: 'key-dropper', interval: 3 },
+  },
+  'beating-heart': {
+    id: 'beating-heart',
+    name: 'Beating Heart',
+    description: 'Familiar: a little heart that follows you and drops a heart every 4 rooms.',
+    modifiers: {},
+    familiar: { kind: 'heart-dropper', interval: 4 },
+  },
+  'gold-bug': {
+    id: 'gold-bug',
+    name: 'Gold Bug',
+    description: 'Familiar: a bug that follows you and drops a coin every 2 rooms.',
+    modifiers: {},
+    familiar: { kind: 'coin-dropper', interval: 2 },
+  },
+  'spectral-wisp': {
+    id: 'spectral-wisp',
+    name: 'Spectral Wisp',
+    description: 'Familiar: a wisp that follows you and fires steady tears at enemies.',
+    modifiers: {},
+    familiar: { kind: 'wisp', damage: 2, fireInterval: 0.6, range: 5 },
+  },
+  'stone-owl': {
+    id: 'stone-owl',
+    name: 'Stone Owl',
+    description: 'Familiar: a slow owl that fires heavy piercing shots at enemies.',
+    modifiers: {},
+    familiar: { kind: 'owl', damage: 5, fireInterval: 1.6, piercing: true, range: 7 },
+  },
+  'hornet-nest': {
+    id: 'hornet-nest',
+    name: 'Hornet Nest',
+    description: 'Familiar: a hornet that sprays a rapid weak 3-tear spread at enemies.',
+    modifiers: {},
+    familiar: { kind: 'hornet', damage: 1, fireInterval: 0.5, shots: 3, range: 4 },
+  },
+  knife: {
+    id: 'knife',
+    name: "Mom's Knife",
+    description: 'Replaces tears with a melee blade that points where you walk. Hold a fire direction to charge and extend it.',
+    modifiers: {},
+    knife: true,
+  },
 };
 
 /** Pool of item ids that can drop, in a stable order (for deterministic picking). */
@@ -139,6 +346,7 @@ export function applyItem(player: MutableStats, item: Item): void {
   }
   if (m.speed) player.speed += m.speed;
   if (m.tearDamage) player.tearDamage += m.tearDamage;
+  if (m.range) player.tearRange += m.range;
   if (m.fireRate) player.fireRate += m.fireRate;
   if (item.tearEffect) player.tearEffects.push(item.tearEffect);
   if (item.tearMods) {
@@ -146,6 +354,23 @@ export function applyItem(player: MutableStats, item: Item): void {
     if (t.shotCount) player.shotCount += t.shotCount;
     if (t.piercing) player.piercing = true;
     if (t.homing) player.homing = true;
+  }
+  if (item.flying) player.flying = true;
+  if (item.knife) player.knife = true;
+  if (item.familiar) {
+    const f = item.familiar;
+    player.familiars.push({
+      kind: f.kind,
+      interval: f.interval ?? 0,
+      roomTimer: 0,
+      pos: { x: 0, y: 0 }, // snapped to the player on room entry
+      fireCooldown: 0,
+      damage: f.damage ?? 0,
+      fireInterval: f.fireInterval ?? 0,
+      shots: f.shots ?? 1,
+      piercing: f.piercing ?? false,
+      range: f.range ?? 4,
+    });
   }
   player.items.push(item.id);
 }

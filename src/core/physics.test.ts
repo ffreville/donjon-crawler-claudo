@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { aabbHitsWall, moveBody } from './physics.js';
-import { makeRoomGrid } from './room.js';
+import { makeRoomGrid, ROOM_H, ROOM_W } from './room.js';
 
-const grid = makeRoomGrid(); // 15x9, border ring of walls, open interior
+const grid = makeRoomGrid(); // ROOM_W x ROOM_H, border ring of walls, open interior
 
 describe('aabbHitsWall', () => {
   it('detects the border walls', () => {
@@ -30,10 +30,11 @@ describe('moveBody', () => {
 
   it('stops against the right wall and never overlaps it', () => {
     let pos = { x: 7.5, y: 4.5 };
-    for (let i = 0; i < 200; i++) pos = moveBody(grid, pos, half, 0.1, 0);
+    // Enough steps (0.1/tile) to cross the whole room and pile into the far wall.
+    for (let i = 0; i < ROOM_W * 12; i++) pos = moveBody(grid, pos, half, 0.1, 0);
     expect(aabbHitsWall(grid, pos.x, pos.y, half)).toBe(false);
-    expect(pos.x).toBeLessThanOrEqual(14 - half); // wall column starts at x=14
-    expect(pos.x).toBeGreaterThan(13); // got close to the wall
+    expect(pos.x).toBeLessThanOrEqual(ROOM_W - 1 - half); // wall column starts at x=ROOM_W-1
+    expect(pos.x).toBeGreaterThan(ROOM_W - 2); // got close to the wall
   });
 
   it('stops against the left wall', () => {
@@ -51,7 +52,7 @@ describe('moveBody', () => {
       down = moveBody(grid, down, half, 0, 0.1);
     }
     expect(up.y).toBeGreaterThanOrEqual(1 + half);
-    expect(down.y).toBeLessThanOrEqual(8 - half);
+    expect(down.y).toBeLessThanOrEqual(ROOM_H - 1 - half);
     expect(aabbHitsWall(grid, up.x, up.y, half)).toBe(false);
     expect(aabbHitsWall(grid, down.x, down.y, half)).toBe(false);
   });

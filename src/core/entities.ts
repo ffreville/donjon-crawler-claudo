@@ -7,7 +7,16 @@ import type { Combatant, Vec2 } from './types.js';
  * - shooter: keeps its distance and fires projectiles
  * - tank: slow, high HP, hits hard
  */
-export type EnemyKind = 'chaser' | 'swarmer' | 'shooter' | 'tank' | 'boss';
+export type EnemyKind =
+  | 'chaser'
+  | 'swarmer'
+  | 'shooter'
+  | 'tank'
+  | 'boss'
+  | 'fly' // small, fast, erratic buzzing (Attack Fly)
+  | 'charger' // telegraphs then dashes in a straight line (Charger)
+  | 'exploder' // chases, bursts for AoE damage on death (Boom Fly)
+  | 'splitter'; // chases, splits into two flies on death (Globin/Splitter)
 
 /** A hostile entity. Behaviour is driven by `kind`. */
 export interface Enemy extends Combatant {
@@ -30,6 +39,10 @@ export interface Enemy extends Combatant {
   bossVariant: number;
   /** Boss spiral accumulator (radians); ignored by non-boss kinds. */
   bossSpin: number;
+  /** Generic AI timer (fly wobble phase, charger dash cycle). */
+  aiTimer: number;
+  /** Locked direction for a charger's dash. */
+  aiDir: Vec2;
 }
 
 export type ProjectileSource = 'player' | 'enemy';
@@ -77,6 +90,12 @@ interface PickupBase {
   id: number;
   pos: Vec2;
   radius: number;
+  /**
+   * When `false`, the pickup can't be collected until the player steps off it
+   * once (it then arms itself). Used for an active item dropped under the player
+   * during a swap, so it isn't instantly re-collected. Absent/`true` = armed.
+   */
+  armed?: boolean;
 }
 
 /** A pickup that grants an item by id. `cost` > 0 means it must be bought (shop). */
@@ -132,6 +151,18 @@ export function makeKey(id: number, pos: Vec2, radius = 0.25): KeyPickup {
   return { id, pos: { x: pos.x, y: pos.y }, radius, kind: 'key' };
 }
 
+/** A floor hazard: 'spike' deals damage, 'pit' sends the player back to the entrance. */
+export type TrapKind = 'spike' | 'pit';
+
+export interface Trap {
+  pos: Vec2;
+  kind: TrapKind;
+}
+
+export function makeTrap(pos: Vec2, kind: TrapKind): Trap {
+  return { pos: { x: pos.x, y: pos.y }, kind };
+}
+
 export interface EnemyStats {
   kind?: EnemyKind;
   hp?: number;
@@ -149,6 +180,10 @@ export const ENEMY_ARCHETYPES: Record<EnemyKind, Required<Omit<EnemyStats, 'kind
   shooter: { hp: 5, speed: 1.8, radius: 0.4, touchDamage: 1, attack: 0, defense: 0 },
   tank: { hp: 14, speed: 1.2, radius: 0.6, touchDamage: 2, attack: 0, defense: 0 },
   boss: { hp: 30, speed: 1.5, radius: 0.7, touchDamage: 2, attack: 0, defense: 0 },
+  fly: { hp: 2, speed: 3.6, radius: 0.26, touchDamage: 1, attack: 0, defense: 0 },
+  charger: { hp: 8, speed: 1.6, radius: 0.42, touchDamage: 1, attack: 0, defense: 0 },
+  exploder: { hp: 4, speed: 2.6, radius: 0.34, touchDamage: 1, attack: 0, defense: 0 },
+  splitter: { hp: 8, speed: 2.2, radius: 0.42, touchDamage: 1, attack: 0, defense: 0 },
 };
 
 export function makeEnemy(id: number, pos: Vec2, stats: EnemyStats = {}): Enemy {
@@ -168,6 +203,8 @@ export function makeEnemy(id: number, pos: Vec2, stats: EnemyStats = {}): Enemy 
     knockback: { x: 0, y: 0 },
     bossVariant: 0,
     bossSpin: 0,
+    aiTimer: 0,
+    aiDir: { x: 0, y: 0 },
     hp,
     maxHp: hp,
     attack: stats.attack ?? base.attack,

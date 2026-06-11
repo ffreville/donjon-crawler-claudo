@@ -68,7 +68,7 @@ describe('floor composition', () => {
     enterRoom(a, firstNormalId(a));
     enterRoom(b, firstNormalId(b));
     expect(a.enemies.map((e) => e.kind)).toEqual(b.enemies.map((e) => e.kind));
-    // Floor 1 only spawns chasers/swarmers.
-    for (const e of a.enemies) expect(['chaser', 'swarmer']).toContain(e.kind);
+    // Floor 1 only spawns chasers/swarmers/flies.
+    for (const e of a.enemies) expect(['chaser', 'swarmer', 'fly']).toContain(e.kind);
   });
 });

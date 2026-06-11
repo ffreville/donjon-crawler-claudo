@@ -1,5 +1,15 @@
 import Phaser from 'phaser';
-import { createButton, getShowStats, PALETTE, setShowStats } from './ui.js';
+import { setMusicEnabled } from './music.js';
+import {
+  createButton,
+  getMusicOn,
+  getShowStats,
+  getSoundOn,
+  PALETTE,
+  setMusicOn,
+  setShowStats,
+  setSoundOn,
+} from './ui.js';
 
 /** Options menu: toggle the right-side stats panel. */
 export class OptionsScene extends Phaser.Scene {
@@ -37,13 +47,27 @@ export class OptionsScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
 
-    const label = (): string => `Stats a droite : ${getShowStats(this) ? 'ON' : 'OFF'}`;
-    const toggle = createButton(this, width / 2, height * 0.48, label(), () => {
+    const statsLabel = (): string => `Stats a droite : ${getShowStats(this) ? 'ON' : 'OFF'}`;
+    const statsToggle = createButton(this, width / 2, height * 0.4, statsLabel(), () => {
       setShowStats(this, !getShowStats(this));
-      toggle.setText(label());
+      statsToggle.setText(statsLabel());
     });
 
-    createButton(this, width / 2, height * 0.48 + 72, 'Retour', () => this.goBack());
+    const sfxLabel = (): string => `Bruitages : ${getSoundOn(this) ? 'ON' : 'OFF'}`;
+    const sfxToggle = createButton(this, width / 2, height * 0.4 + 60, sfxLabel(), () => {
+      setSoundOn(this, !getSoundOn(this));
+      sfxToggle.setText(sfxLabel());
+    });
+
+    const musicLabel = (): string => `Musique : ${getMusicOn(this) ? 'ON' : 'OFF'}`;
+    const musicToggle = createButton(this, width / 2, height * 0.4 + 120, musicLabel(), () => {
+      const on = !getMusicOn(this);
+      setMusicOn(this, on);
+      setMusicEnabled(on); // apply live
+      musicToggle.setText(musicLabel());
+    });
+
+    createButton(this, width / 2, height * 0.4 + 196, 'Retour', () => this.goBack());
     this.input.keyboard?.on('keydown-ESC', () => this.goBack());
   }
 }

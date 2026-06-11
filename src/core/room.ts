@@ -1,8 +1,8 @@
 import type { Direction, Vec2 } from './types.js';
 
 /** Fixed interior dimensions of a single room, in tiles. */
-export const ROOM_W = 15;
-export const ROOM_H = 9;
+export const ROOM_W = 22;
+export const ROOM_H = 13;
 
 /**
  * The walkable grid of one room. `walls[y * width + x] === true` means blocked.
@@ -68,10 +68,27 @@ export function doorWorldPos(grid: RoomGrid, dir: Direction): Vec2 {
   return { x: t.x + 0.5, y: t.y + 0.5 };
 }
 
-/** Opens a door by clearing its wall tile, so entities can pass through. */
+/** Door opening width, in tiles. One tile; the player's small hitbox fits through. */
+export const DOOR_GAP_WIDTH = 1;
+
+/**
+ * Opens a door by clearing a `DOOR_GAP_WIDTH`-tile gap in the wall around the
+ * opening, so the player can pass without threading a single tile. The gap runs
+ * along the wall and never reaches the corners.
+ */
 export function carveDoor(grid: RoomGrid, dir: Direction): void {
   const t = doorOpeningTile(grid, dir);
-  grid.walls[t.y * grid.width + t.x] = false;
+  const horizontal = dir === 'up' || dir === 'down'; // gap runs along x
+  const lo = -Math.floor((DOOR_GAP_WIDTH - 1) / 2);
+  const hi = Math.floor(DOOR_GAP_WIDTH / 2);
+  for (let k = lo; k <= hi; k++) {
+    const x = horizontal ? t.x + k : t.x;
+    const y = horizontal ? t.y : t.y + k;
+    // Stay within the wall's interior span (1..size-2) so corners stay solid.
+    if (horizontal && (x < 1 || x > grid.width - 2)) continue;
+    if (!horizontal && (y < 1 || y > grid.height - 2)) continue;
+    grid.walls[y * grid.width + x] = false;
+  }
 }
 
 /**

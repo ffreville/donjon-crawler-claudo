@@ -43,3 +43,21 @@ export function getShowStats(scene: Phaser.Scene): boolean {
 export function setShowStats(scene: Phaser.Scene, value: boolean): void {
   scene.registry.set('showStats', value);
 }
+
+/** Sound effects default to on. */
+export function getSoundOn(scene: Phaser.Scene): boolean {
+  return scene.registry.get('soundOn') !== false;
+}
+
+export function setSoundOn(scene: Phaser.Scene, value: boolean): void {
+  scene.registry.set('soundOn', value);
+}
+
+/** Music defaults to on. */
+export function getMusicOn(scene: Phaser.Scene): boolean {
+  return scene.registry.get('musicOn') !== false;
+}
+
+export function setMusicOn(scene: Phaser.Scene, value: boolean): void {
+  scene.registry.set('musicOn', value);
+}

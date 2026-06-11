@@ -8,4 +8,5 @@ export * from './status.js';
 export * from './items.js';
 export * from './combat.js';
 export * from './dungeon.js';
+export * from './characters.js';
 export * from './gameState.js';

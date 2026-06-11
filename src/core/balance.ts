@@ -72,16 +72,20 @@ export function botPolicy(state: GameState): InputState {
   const aimX = dist > 0 ? dx / dist : 1;
   const aimY = dist > 0 ? dy / dist : 0;
 
+  // Hold a standoff the tears can actually reach: never beyond (tearRange − 0.5),
+  // so a short range makes the bot fight closer instead of whiffing from afar.
+  const standoff = Math.min(KITE_DISTANCE, Math.max(1, player.tearRange - 0.5));
+
   let moveX = 0;
   let moveY = 0;
   if (dist > 0) {
     const ux = dx / dist;
     const uy = dy / dist;
-    if (dist < KITE_DISTANCE - KITE_BAND) {
+    if (dist < standoff - KITE_BAND) {
       // Too close: back away from the enemy.
       moveX = -ux;
       moveY = -uy;
-    } else if (dist > KITE_DISTANCE + KITE_BAND) {
+    } else if (dist > standoff + KITE_BAND) {
       // Too far: close the gap.
       moveX = ux;
       moveY = uy;

@@ -30,7 +30,7 @@ export class MenuScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     createButton(this, width / 2, height * 0.55, 'Nouvelle partie', () =>
-      this.scene.start('GameScene'),
+      this.scene.start('CharacterSelectScene'),
     );
     createButton(this, width / 2, height * 0.55 + 64, 'Options', () =>
       this.scene.start('OptionsScene'),

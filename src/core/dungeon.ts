@@ -22,11 +22,17 @@ const NEIGHBOR_OFFSETS = [
 ] as const;
 
 /**
- * Generates a connected dungeon via a random walk that branches from already
- * placed rooms. Fully deterministic given `rng`. The room farthest (in graph
- * distance) from the start becomes the boss; the remaining special rooms — one
- * mini-boss, one shop, and 1–2 treasures — are placed on dead-ends where
- * possible. Everything else is a normal (combat) room.
+ * Generates a connected dungeon, fully deterministic given `rng`.
+ *
+ * Layout is built in two parts so that every *special* room (boss, mini-boss,
+ * shop, treasure) is a single-door dead-end:
+ *  1. A "trunk" of normal rooms is grown by a random walk and cross-linked where
+ *     cells are incidentally adjacent (loops, so the trunk isn't a pure line).
+ *  2. Each special is then hung off a trunk room as a brand-new leaf — one edge,
+ *     never extended from, never cross-linked — so it keeps exactly one door.
+ * The boss is the special leaf farthest from the start; the rest take the other
+ * leaves. On a tiny floor the special count degrades gracefully (the trunk must
+ * keep at least the start room).
  */
 export function generateDungeon(rng: Rng, opts: DungeonOptions = DEFAULT_DUNGEON): Dungeon {
   const { roomCount, mapSize } = opts;
@@ -51,11 +57,23 @@ export function generateDungeon(rng: Rng, opts: DungeonOptions = DEFAULT_DUNGEON
   const center = Math.floor(mapSize / 2);
   const start = place(center, center, 'start');
 
-  // Grow until we hit roomCount, always extending from an existing room into
-  // a free adjacent cell. Guard against running out of room with an attempt cap.
-  let attempts = 0;
+  // The special rooms that must each end up a single-door dead-end.
+  const minibossRooms = opts.minibossRooms ?? 1;
+  const treasureRooms = opts.treasureRooms ?? 1;
+  const specialTypes: RoomType[] = ['boss'];
+  for (let m = 0; m < minibossRooms; m++) specialTypes.push('miniboss');
+  specialTypes.push('shop');
+  for (let t = 0; t < treasureRooms; t++) specialTypes.push('treasure');
+  // Reserve one leaf per special, but always leave at least the start in the
+  // trunk; on a tiny floor we simply place fewer specials.
+  const reserved = Math.min(specialTypes.length, Math.max(0, roomCount - 1));
+  const trunkCount = roomCount - reserved;
+
   const maxAttempts = roomCount * 50;
-  while (rooms.size < roomCount && attempts < maxAttempts) {
+
+  // Part 1a: grow the trunk (a spanning tree of normal rooms) up to trunkCount.
+  let attempts = 0;
+  while (rooms.size < trunkCount && attempts < maxAttempts) {
     attempts++;
     const from = rng.pick([...rooms.values()]);
     const dir = rng.pick(NEIGHBOR_OFFSETS);
@@ -67,53 +85,59 @@ export function generateDungeon(rng: Rng, opts: DungeonOptions = DEFAULT_DUNGEON
     connect(from, room);
   }
 
-  // Connect any incidentally-adjacent rooms so the layout feels less linear.
-  for (const room of rooms.values()) {
+  // Part 1b: cross-link incidentally-adjacent trunk rooms (every room so far is
+  // trunk/normal, so these loops never touch a special).
+  for (const room of [...rooms.values()]) {
     for (const off of NEIGHBOR_OFFSETS) {
       const id = byCell.get(key(room.gx + off.x, room.gy + off.y));
-      if (id !== undefined) {
-        const other = rooms.get(id);
-        if (other) connect(room, other);
-      }
+      if (id === undefined) continue;
+      const other = rooms.get(id);
+      if (other) connect(room, other);
     }
   }
 
-  const dist = bfsDistances(rooms, start.id);
+  // Part 2: attach `reserved` fresh leaves, each to a trunk room with a free
+  // adjacent cell. They are left as 'normal' for now and typed below.
+  const trunkRooms = [...rooms.values()];
+  const slots: Room[] = [];
+  for (let i = 0; i < reserved; i++) {
+    let tries = 0;
+    while (tries < maxAttempts) {
+      tries++;
+      const anchor = rng.pick(trunkRooms);
+      const dir = rng.pick(NEIGHBOR_OFFSETS);
+      const gx = anchor.gx + dir.x;
+      const gy = anchor.gy + dir.y;
+      if (gx < 0 || gy < 0 || gx >= mapSize || gy >= mapSize) continue;
+      if (byCell.has(key(gx, gy))) continue;
+      const leaf = place(gx, gy, 'normal');
+      connect(anchor, leaf);
+      slots.push(leaf);
+      break;
+    }
+  }
 
-  // Boss = farthest room from start.
+  // Boss = the reserved leaf farthest from the start (ties: first placed).
+  const dist = bfsDistances(rooms, start.id);
   let bossId = start.id;
   let maxDist = -1;
-  for (const [id, d] of dist) {
+  for (const leaf of slots) {
+    const d = dist.get(leaf.id) ?? 0;
     if (d > maxDist) {
       maxDist = d;
-      bossId = id;
+      bossId = leaf.id;
     }
   }
   const boss = rooms.get(bossId);
   if (boss && boss.id !== start.id) boss.type = 'boss';
 
-  // Assign the remaining special rooms. Dead-ends (leaves) are preferred so the
-  // specials sit off the main path, with branch rooms as fallback. The full set
-  // (one mini-boss, one shop, 1–2 treasures) is placed as long as there are
-  // enough non-start/non-boss rooms — true for DEFAULT_DUNGEON and every scaled
-  // floor; on a tiny floor `claim()` degrades gracefully (places what fits).
-  const others = [...rooms.values()].filter((r) => r.id !== start.id && r.id !== bossId);
-  const leaves = rng.shuffle(others.filter((r) => r.neighbors.length === 1));
-  const branches = rng.shuffle(others.filter((r) => r.neighbors.length > 1));
-  const pool = [...leaves, ...branches];
-  let pi = 0;
-  const claim = (type: RoomType): void => {
-    const room = pool[pi];
-    if (room) {
-      room.type = type;
-      pi++;
-    }
-  };
-  const minibossRooms = opts.minibossRooms ?? 1;
-  const treasureRooms = opts.treasureRooms ?? 1;
-  for (let m = 0; m < minibossRooms; m++) claim('miniboss');
-  claim('shop');
-  for (let t = 0; t < treasureRooms; t++) claim('treasure');
+  // The remaining specials (mini-boss(es), shop, treasure(s)) take the other
+  // leaves, shuffled for variety. Extra types beyond available leaves are dropped.
+  const rest = rng.shuffle(slots.filter((r) => r.id !== bossId));
+  const nonBossTypes = specialTypes.filter((t) => t !== 'boss');
+  for (let i = 0; i < rest.length && i < nonBossTypes.length; i++) {
+    rest[i]!.type = nonBossTypes[i]!;
+  }
 
   return { rooms, startRoom: start.id, bossRoom: bossId };
 }

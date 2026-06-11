@@ -52,21 +52,30 @@ describe('projectiles', () => {
     runTicks(s, idle, 90); // let it fly into the right wall (no re-fire)
     expect(s.projectiles).toHaveLength(0);
   });
+
+  it('fall after their range, so they cannot cross the room', () => {
+    const s = createGame(1, { enemyCount: 0 });
+    // An enemy well beyond the base tear range (2 tiles) is never reached.
+    s.enemies.push(makeEnemy(99, { x: s.player.pos.x + 6, y: s.player.pos.y }, { hp: 3, speed: 0 }));
+    s.graceTimer = 0;
+    for (let i = 0; i < 180; i++) tick(s, fireRight, FIXED_DT);
+    expect(s.enemies).toHaveLength(1); // out of range: survives
+  });
 });
 
 describe('enemies', () => {
   it('chase the player', () => {
     const s = createGame(1, { enemyCount: 0 });
-    s.enemies.push(makeEnemy(99, { x: 10, y: 4.5 }));
+    s.enemies.push(makeEnemy(99, { x: s.player.pos.x + 2.5, y: s.player.pos.y }));
     s.graceTimer = 0; // skip the entry grace; we're testing chase
     const startX = s.enemies[0]!.pos.x;
-    runTicks(s, idle, 30); // player stays put at (7.5, 4.5)
+    runTicks(s, idle, 30); // player stays put at the room center
     expect(s.enemies[0]!.pos.x).toBeLessThan(startX);
   });
 
   it('die to player projectiles', () => {
     const s = createGame(1, { enemyCount: 0 });
-    s.enemies.push(makeEnemy(99, { x: 9, y: 4.5 }, { hp: 3 }));
+    s.enemies.push(makeEnemy(99, { x: s.player.pos.x + 1.5, y: s.player.pos.y }, { hp: 3 }));
     for (let i = 0; i < 60 && s.enemies.length > 0; i++) tick(s, fireRight, FIXED_DT);
     expect(s.enemies).toHaveLength(0);
   });
@@ -74,8 +83,8 @@ describe('enemies', () => {
   it('a single projectile is consumed by the first enemy and does not pierce', () => {
     const s = createGame(1, { enemyCount: 0 });
     // Two stationary enemies in a line; one shot should kill only the nearer one.
-    s.enemies.push(makeEnemy(1, { x: 9, y: 4.5 }, { hp: 3, speed: 0 }));
-    s.enemies.push(makeEnemy(2, { x: 9.7, y: 4.5 }, { hp: 3, speed: 0 }));
+    s.enemies.push(makeEnemy(1, { x: s.player.pos.x + 1.5, y: s.player.pos.y }, { hp: 3, speed: 0 }));
+    s.enemies.push(makeEnemy(2, { x: s.player.pos.x + 2.2, y: s.player.pos.y }, { hp: 3, speed: 0 }));
     tick(s, fireRight, FIXED_DT); // exactly one shot
     runTicks(s, idle, 40); // let it travel; no further firing
     expect(s.enemies).toHaveLength(1);
@@ -86,7 +95,7 @@ describe('enemies', () => {
 describe('contact damage', () => {
   it('damages the player on contact, then grants i-frames', () => {
     const s = createGame(1, { enemyCount: 0 });
-    s.enemies.push(makeEnemy(99, { x: 7.5, y: 4.5 })); // overlapping the player
+    s.enemies.push(makeEnemy(99, { x: s.player.pos.x, y: s.player.pos.y })); // overlapping the player
     s.graceTimer = 0; // skip the entry grace; we're testing contact damage
     const hp0 = s.player.hp;
     tick(s, idle, FIXED_DT);

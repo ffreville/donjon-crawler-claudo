@@ -10,7 +10,7 @@ describe('entry grace', () => {
 
   it('freezes enemies and blocks contact damage during the window, then resumes', () => {
     const s = createGame(1, { enemyCount: 0 });
-    const chaser = makeEnemy(1, { x: 10, y: 4.5 });
+    const chaser = makeEnemy(1, { x: s.player.pos.x + 2.5, y: s.player.pos.y });
     const toucher = makeEnemy(2, { x: s.player.pos.x, y: s.player.pos.y }); // overlapping
     s.enemies.push(chaser, toucher);
     const x0 = chaser.pos.x;

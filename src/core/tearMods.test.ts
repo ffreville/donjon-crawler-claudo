@@ -29,6 +29,7 @@ describe('piercing', () => {
   it('passes through and damages two lined-up enemies', () => {
     const s = createGame(1, { enemyCount: 0 });
     s.player.piercing = true;
+    s.player.tearRange = 5; // long enough to reach both; we're testing piercing, not range
     const near = addEnemy(s, 1, 1.5, 0);
     const far = addEnemy(s, 2, 3, 0);
     for (let i = 0; i < 40; i++) tick(s, fireRight, FIXED_DT);
@@ -62,6 +63,7 @@ describe('homing', () => {
   it('curves toward an off-axis enemy and hits it', () => {
     const s = createGame(1, { enemyCount: 0 });
     s.player.homing = true;
+    s.player.tearRange = 8; // a curving tear travels a longer path; give it room
     const e = addEnemy(s, 1, 3, 3, 100); // down-right; we fire straight right
     for (let i = 0; i < 60 && e.hp === 100; i++) tick(s, fireRight, FIXED_DT);
     expect(e.hp).toBeLessThan(100);

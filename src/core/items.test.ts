@@ -1,18 +1,31 @@
 import { describe, expect, it } from 'vitest';
-import { createGame, enterRoom, FIXED_DT, NO_INPUT, tick, type GameState } from './gameState.js';
-import { applyItem, ITEMS, type MutableStats } from './items.js';
+import {
+  createGame,
+  descendToNextFloor,
+  enterRoom,
+  FIXED_DT,
+  MAX_FLOORS,
+  NO_INPUT,
+  tick,
+  type GameState,
+} from './gameState.js';
+import { applyItem, ITEM_POOL, ITEMS, type MutableStats } from './items.js';
 
 const baseStats = (over: Partial<MutableStats> = {}): MutableStats => ({
   hp: 6,
   maxHp: 6,
   speed: 6,
   tearDamage: 3,
+  tearRange: 4,
   fireRate: 3,
   items: [],
   tearEffects: [],
   shotCount: 1,
   piercing: false,
   homing: false,
+  flying: false,
+  knife: false,
+  familiars: [],
   ...over,
 });
 
@@ -39,6 +52,21 @@ describe('applyItem', () => {
     applyItem(p, ITEMS['sharp-tears']!);
     expect(p.tearDamage).toBe(6); // base 3 + sharp-tears 3 (one-shots a 6-HP basic)
     expect(p.items).toEqual(['sharp-tears']);
+  });
+
+  it('range items extend tear range additively', () => {
+    const p = baseStats({ tearRange: 4 });
+    applyItem(p, ITEMS['spyglass']!); // +1
+    expect(p.tearRange).toBe(5);
+    applyItem(p, ITEMS['telescope']!); // +1.5
+    expect(p.tearRange).toBe(6.5);
+  });
+
+  it('wings grant flight', () => {
+    const p = baseStats();
+    applyItem(p, ITEMS['wings']!);
+    expect(p.flying).toBe(true);
+    expect(p.items).toContain('wings');
   });
 
   it('raises max HP and heals by the same amount', () => {
@@ -81,5 +109,47 @@ describe('treasure pickups', () => {
     enterRoom(a, treasureId);
     enterRoom(b, treasureId);
     expect(currentItemId(a)).toBe(currentItemId(b));
+  });
+});
+
+describe('item bag (no duplicates per run)', () => {
+  /** Every item id reserved for treasure/shop rooms across all floors of a run. */
+  const offeredOverRun = (seed: number): string[] => {
+    const s = createGame(seed);
+    const seen: string[] = [];
+    const collect = (): void => {
+      for (const rt of s.roomRuntimes.values()) seen.push(...rt.offerItems);
+    };
+    collect();
+    for (let f = 2; f <= MAX_FLOORS; f++) {
+      descendToNextFloor(s);
+      collect();
+    }
+    return seen;
+  };
+
+  it('never offers the same item twice in a run', () => {
+    for (const seed of [1, 7, 42, 123, 999]) {
+      const offered = offeredOverRun(seed);
+      expect(new Set(offered).size).toBe(offered.length); // all distinct
+      expect(offered.length).toBeLessThanOrEqual(ITEM_POOL.length); // bounded by the pool
+    }
+  });
+
+  it('a collected item is not offered again later in the run', () => {
+    const { seed, treasureId } = gameWithTreasure();
+    const s = createGame(seed);
+    enterRoom(s, treasureId);
+    const itemId = currentItemId(s);
+    tick(s, NO_INPUT, FIXED_DT); // pick it up
+    expect(s.player.items).toContain(itemId);
+
+    // It must not resurface in any later floor's offers.
+    const laterOffers: string[] = [];
+    for (let f = s.floor + 1; f <= MAX_FLOORS; f++) {
+      descendToNextFloor(s);
+      for (const rt of s.roomRuntimes.values()) laterOffers.push(...rt.offerItems);
+    }
+    expect(laterOffers).not.toContain(itemId);
   });
 });

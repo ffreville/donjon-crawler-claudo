@@ -81,13 +81,13 @@ describe('slow', () => {
   it('reduces how far an enemy travels', () => {
     const make = (slow: boolean): number => {
       const s = createGame(1, { enemyCount: 0 });
-      const e = makeEnemy(9, { x: 12, y: 4.5 }, { kind: 'chaser' });
+      const e = makeEnemy(9, { x: s.player.pos.x + 4, y: s.player.pos.y }, { kind: 'chaser' });
       if (slow) applyStatuses(e, [{ kind: 'slow', duration: 5, magnitude: 0.5 }]);
       s.enemies.push(e);
       s.graceTimer = 0; // skip entry grace; we're testing movement
       const x0 = e.pos.x;
       for (let i = 0; i < 30; i++) tick(s, NO_INPUT, FIXED_DT);
-      return x0 - e.pos.x; // distance moved toward the player (at x=7.5)
+      return x0 - e.pos.x; // distance moved leftward toward the player
     };
     expect(make(true)).toBeLessThan(make(false));
   });

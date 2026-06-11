@@ -1,18 +1,20 @@
 import { describe, expect, it } from 'vitest';
+import type { TrapKind } from './entities.js';
+import { doorWorldPos, ROOM_H, ROOM_W } from './room.js';
 import {
   createGame,
+  DOOR_TRAP_CLEARANCE,
   enterRoom,
   FIXED_DT,
   NO_INPUT,
+  PIT_DAMAGE,
   TRAP_DAMAGE,
-  TRAP_RADIUS,
   tick,
   type GameState,
 } from './gameState.js';
 
-const ROOM_CENTER = { x: 7.5, y: 4.5 };
+const ROOM_CENTER = { x: ROOM_W / 2, y: ROOM_H / 2 };
 
-/** Enters the first normal room of a fresh game on the given seed. */
 const enterFirstNormal = (seed: number): GameState => {
   const s = createGame(seed);
   const room = [...s.dungeon.rooms.values()].find((r) => r.type === 'normal');
@@ -21,67 +23,98 @@ const enterFirstNormal = (seed: number): GameState => {
   return s;
 };
 
+/** Enters a normal room that contains a trap of the requested kind. */
+const enterRoomWithTrap = (kind: TrapKind): { s: GameState; trap: { pos: { x: number; y: number } } } => {
+  for (let seed = 1; seed < 200; seed++) {
+    const s = enterFirstNormal(seed);
+    const trap = s.traps.find((t) => t.kind === kind);
+    if (trap) return { s, trap };
+  }
+  throw new Error(`no ${kind} trap found in seeds 1..199`);
+};
+
 describe('traps', () => {
-  it('appear in some normal rooms but not all (probabilistic, deterministic)', () => {
+  it('both spikes and pits appear across rooms, but not in every room', () => {
     let trapped = 0;
+    let sawSpike = false;
+    let sawPit = false;
     for (let seed = 1; seed <= 60; seed++) {
-      if (enterFirstNormal(seed).traps.length > 0) trapped++;
+      const traps = enterFirstNormal(seed).traps;
+      if (traps.length > 0) trapped++;
+      if (traps.some((t) => t.kind === 'spike')) sawSpike = true;
+      if (traps.some((t) => t.kind === 'pit')) sawPit = true;
     }
     expect(trapped).toBeGreaterThan(0);
     expect(trapped).toBeLessThan(60);
+    expect(sawSpike).toBe(true);
+    expect(sawPit).toBe(true);
   });
 
-  it('are placed away from the room center (safe arrival)', () => {
+  it('are never placed at the center or right in front of a door', () => {
     for (let seed = 1; seed <= 60; seed++) {
-      for (const t of enterFirstNormal(seed).traps) {
-        expect(Math.hypot(t.x - ROOM_CENTER.x, t.y - ROOM_CENTER.y)).toBeGreaterThanOrEqual(2);
+      const s = enterFirstNormal(seed);
+      const doorPts = s.doors.map((d) => doorWorldPos(s.grid, d.dir));
+      for (const t of s.traps) {
+        expect(Math.hypot(t.pos.x - ROOM_CENTER.x, t.pos.y - ROOM_CENTER.y)).toBeGreaterThanOrEqual(2);
+        for (const dp of doorPts) {
+          expect(Math.hypot(t.pos.x - dp.x, t.pos.y - dp.y)).toBeGreaterThanOrEqual(DOOR_TRAP_CLEARANCE);
+        }
       }
     }
   });
 
-  it('a room layout (incl. traps) is deterministic for a given seed', () => {
-    const sig = (s: GameState): string => s.traps.map((t) => `${t.x},${t.y}`).join('|');
+  it('trap layout is deterministic for a given seed', () => {
+    const sig = (s: GameState): string =>
+      s.traps.map((t) => `${t.kind}:${t.pos.x},${t.pos.y}`).join('|');
     expect(sig(enterFirstNormal(7))).toBe(sig(enterFirstNormal(7)));
   });
 
-  it('damage the player on contact, then grant i-frames', () => {
-    // Find a seed whose first normal room actually has a trap.
-    let s: GameState | undefined;
-    for (let seed = 1; seed <= 60; seed++) {
-      const g = enterFirstNormal(seed);
-      if (g.traps.length > 0) {
-        s = g;
-        break;
-      }
-    }
-    expect(s).toBeDefined();
-    const game = s!;
-    game.graceTimer = 0; // past the entry grace
-    const hp0 = game.player.hp;
-    game.player.pos = { x: game.traps[0]!.x, y: game.traps[0]!.y };
-    tick(game, NO_INPUT, FIXED_DT);
-    expect(game.player.hp).toBe(hp0 - TRAP_DAMAGE);
-    expect(game.player.invuln).toBeGreaterThan(0);
-    tick(game, NO_INPUT, FIXED_DT); // still standing on it, but invulnerable
-    expect(game.player.hp).toBe(hp0 - TRAP_DAMAGE);
+  it('spikes damage the player on contact, then grant i-frames', () => {
+    const { s, trap } = enterRoomWithTrap('spike');
+    s.graceTimer = 0;
+    const hp0 = s.player.hp;
+    s.player.pos = { x: trap.pos.x, y: trap.pos.y };
+    tick(s, NO_INPUT, FIXED_DT);
+    expect(s.player.hp).toBe(hp0 - TRAP_DAMAGE);
+    expect(s.player.invuln).toBeGreaterThan(0);
+    tick(s, NO_INPUT, FIXED_DT); // invulnerable → no further damage
+    expect(s.player.hp).toBe(hp0 - TRAP_DAMAGE);
   });
 
-  it('do not hurt during the entry grace window', () => {
-    let game: GameState | undefined;
-    for (let seed = 1; seed <= 60; seed++) {
-      const g = enterFirstNormal(seed);
-      if (g.traps.length > 0) {
-        game = g;
-        break;
-      }
-    }
-    const s = game!;
-    expect(s.graceTimer).toBeGreaterThan(0);
-    s.player.pos = { x: s.traps[0]!.x, y: s.traps[0]!.y };
+  it('pits send the player back to the room entrance and deal damage', () => {
+    const { s, trap } = enterRoomWithTrap('pit');
+    s.graceTimer = 0;
+    const entry = { x: s.entryPos.x, y: s.entryPos.y };
     const hp0 = s.player.hp;
-    tick(s, NO_INPUT, FIXED_DT); // within grace
+    s.player.pos = { x: trap.pos.x, y: trap.pos.y };
+    tick(s, NO_INPUT, FIXED_DT);
+    expect(s.player.pos).toEqual(entry);
+    expect(s.player.hp).toBe(hp0 - PIT_DAMAGE);
+  });
+
+  it('flight makes the player immune to spikes and pits', () => {
+    const spike = enterRoomWithTrap('spike');
+    spike.s.graceTimer = 0;
+    spike.s.player.flying = true;
+    const hp0 = spike.s.player.hp;
+    spike.s.player.pos = { x: spike.trap.pos.x, y: spike.trap.pos.y };
+    tick(spike.s, NO_INPUT, FIXED_DT);
+    expect(spike.s.player.hp).toBe(hp0); // no spike damage
+
+    const pit = enterRoomWithTrap('pit');
+    pit.s.graceTimer = 0;
+    pit.s.player.flying = true;
+    pit.s.player.pos = { x: pit.trap.pos.x, y: pit.trap.pos.y };
+    tick(pit.s, NO_INPUT, FIXED_DT);
+    expect(pit.s.player.pos).toEqual({ x: pit.trap.pos.x, y: pit.trap.pos.y }); // not dropped
+  });
+
+  it('do not trigger during the entry grace window', () => {
+    const { s, trap } = enterRoomWithTrap('spike');
+    expect(s.graceTimer).toBeGreaterThan(0);
+    const hp0 = s.player.hp;
+    s.player.pos = { x: trap.pos.x, y: trap.pos.y };
+    tick(s, NO_INPUT, FIXED_DT);
     expect(s.player.hp).toBe(hp0);
-    // sanity: TRAP_RADIUS is a real positive collision size
-    expect(TRAP_RADIUS).toBeGreaterThan(0);
   });
 });

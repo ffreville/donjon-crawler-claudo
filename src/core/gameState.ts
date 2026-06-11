@@ -13,13 +13,17 @@ import {
   makeKey,
   makePickup,
   makeProjectile,
+  makeTrap,
   type Enemy,
   type EnemyKind,
   type Pickup,
   type Projectile,
   type StatusSpec,
+  type Trap,
+  type TrapKind,
 } from './entities.js';
-import { applyItem, getItem, ITEM_POOL } from './items.js';
+import { applyItem, getItem, ITEM_POOL, type Familiar } from './items.js';
+import { getCharacter, type Character } from './characters.js';
 import { applyStatuses, slowFactor } from './status.js';
 import { aabbHitsWall, circlesOverlap, moveBody } from './physics.js';
 import { Rng } from './rng.js';
@@ -39,22 +43,40 @@ import type { Combatant, Direction, Door, Dungeon, RoomId, Vec2 } from './types.
 export const FIXED_DT = 1 / 60;
 /** Player movement speed, in tiles per second. */
 export const PLAYER_SPEED = 6;
-/** Player collision box half-extent, in tiles. Slightly under 0.5 for door clearance. */
-export const PLAYER_RADIUS = 0.35;
+/** Player collision box half-extent, in tiles. Kept small so a 1-tile door is easy to pass. */
+export const PLAYER_RADIUS = 0.28;
 
 /** Projectile speed, in tiles per second. */
 export const PROJECTILE_SPEED = 12;
-/** Projectile lifetime, in seconds. */
+/** Enemy/boss projectile lifetime, in seconds. (Player tears use range, see below.) */
 export const PROJECTILE_LIFE = 1.2;
 /** Base projectile damage; item modifiers add on top (see Player.tearDamage). */
 export const PLAYER_TEAR_DAMAGE = 3;
+/** How far a player tear travels before falling, in tiles (base; item-modifiable). */
+export const PLAYER_TEAR_RANGE = 4;
+
+/** Mom's Knife tuning. The blade is held in front of the player and extends with charge. */
+export const KNIFE_BASE_REACH = 0.7; // tiles, the held blade's fixed reach (no extend)
+export const KNIFE_MAX_REACH = 6; // tiles, farthest a fully-charged throw flies
+export const KNIFE_CHARGE_TIME = 0.8; // seconds of held fire to reach max
+export const KNIFE_HALF_WIDTH = 0.45; // blade thickness either side of its line
+export const KNIFE_HIT_INTERVAL = 0.2; // seconds between damage pulses (held blade)
+export const KNIFE_THROW_SPEED = 16; // tiles/second a thrown knife flies out and back
 /** Player shots per second. */
 export const PLAYER_FIRE_RATE = 3;
 /** Player invulnerability window after taking contact damage, in seconds. */
 export const PLAYER_IFRAMES = 0.8;
 
-/** Distance from a door's opening at which the player transitions through it. */
-export const DOOR_TRIGGER = 0.7;
+/** Distance from a door's opening (along the wall normal) at which the player transitions. */
+export const DOOR_TRIGGER = 0.9;
+/** Half-width of the doorway transition zone along the wall (matches the 1-tile opening). */
+export const DOOR_HALF_SPAN = 0.6;
+
+/**
+ * Distance from a locked door at which walking into it spends a key to open it.
+ * Must exceed the gap the solid wall leaves (~0.85) so the player can reach it.
+ */
+export const LOCK_UNLOCK_DIST = 1.0;
 
 /** Seconds after entering a room before enemies start moving/attacking. */
 export const GRACE_PERIOD = 0.5;
@@ -73,6 +95,9 @@ export const TELEPORTER_RADIUS = 0.5;
 
 /** Number of floors to clear; reaching the teleporter on the last one wins. */
 export const MAX_FLOORS = 10;
+
+/** Combat-room enemy density: roughly one base enemy per this many interior tiles. */
+export const TILES_PER_ENEMY = 70;
 
 /** Difficulty scaling per floor (floor 1 = base values). */
 export const ENEMY_HP_PER_FLOOR = 2;
@@ -95,12 +120,21 @@ export const COIN_DROP_MAX = 3;
 /** Keys: a cleared combat room drops one with this chance (use TBD; tunable). */
 export const KEY_DROP_CHANCE = 0.35;
 
-/** Traps: a fraction of normal rooms get spikes; each deals TRAP_DAMAGE on contact. */
+/** Spikes: a fraction of normal rooms get them; each spike deals TRAP_DAMAGE on contact. */
 export const TRAP_ROOM_CHANCE = 0.4;
 export const TRAP_MIN = 2;
 export const TRAP_MAX = 5;
 export const TRAP_DAMAGE = 1;
 export const TRAP_RADIUS = 0.3;
+
+/** Pits: a fraction of normal rooms get holes that send the player back to the entrance. */
+export const PIT_ROOM_CHANCE = 0.3;
+export const PIT_MIN = 1;
+export const PIT_MAX = 3;
+/** Damage taken when falling into a pit (before being returned to the entrance). */
+export const PIT_DAMAGE = 1;
+/** Keep traps this far from any door so none sit right in front of an entrance. */
+export const DOOR_TRAP_CLEARANCE = 2.5;
 
 /** Shooter-enemy projectile tuning. */
 export const ENEMY_SHOT_SPEED = 7;
@@ -117,6 +151,20 @@ const BOSS_SHOT_DAMAGE = 1;
 const BOSS_SHOT_LIFE = 3;
 /** Number of distinct boss attack-pattern variants. */
 export const BOSS_VARIANTS = 3;
+
+/** Fly: lateral wobble while chasing (Attack Fly). */
+const FLY_WOBBLE_FREQ = 9;
+const FLY_WOBBLE_AMP = 0.8;
+/** Charger: cycle of windup (telegraph) → dash → recover, then re-lock. */
+const CHARGER_CYCLE = 1.8;
+const CHARGER_WINDUP = 0.45;
+const CHARGER_DASH = 0.4;
+const CHARGER_DASH_SPEED = 9;
+/** Exploder (Boom Fly): bursts on death for AoE within this radius. */
+export const EXPLODER_RADIUS = 1.6;
+export const EXPLODER_DAMAGE = 1;
+/** Splitter: spawns this many flies on death. */
+export const SPLITTER_CHILDREN = 2;
 
 /** Synergy: an enemy that is both burning and slowed takes extra burn damage. */
 export const BURN_SLOW_SYNERGY = 1.5;
@@ -137,6 +185,8 @@ export interface Player extends Combatant {
   speed: number;
   /** Projectile damage (base + item modifiers). */
   tearDamage: number;
+  /** How far tears travel before falling, in tiles (base + item modifiers). */
+  tearRange: number;
   /** Shots per second (base + item modifiers). */
   fireRate: number;
   /** Ids of items the player has collected. */
@@ -149,6 +199,8 @@ export interface Player extends Combatant {
   piercing: boolean;
   /** Tears curve toward the nearest enemy. */
   homing: boolean;
+  /** Immune to floor traps (spikes and pits). */
+  flying: boolean;
   /** Currency for the shop. */
   coins: number;
   /** Keys collected (use TBD). */
@@ -157,6 +209,36 @@ export interface Player extends Combatant {
   fireCooldown: number;
   /** Seconds of remaining invulnerability. */
   invuln: number;
+  /** Count of shots fired this run (one per trigger pull, not per pellet). Render uses it to cue audio. */
+  shotsFired: number;
+  /** Id of the held usable item (single active slot), or null if none. */
+  activeItem: string | null;
+  /** Rooms cleared toward recharging the active item (capped at its `charge`). */
+  activeCharge: number;
+  /** Owned familiars (follow the player, act each room). Persist across floors. */
+  familiars: Familiar[];
+  /** Mom's Knife: replaces tears with a held melee blade. */
+  knife: boolean;
+  /** Knife facing (normalized): the direction the blade points. */
+  knifeDir: Vec2;
+  /** Knife charge in [0,1]; grows while a fire direction is held, extending reach. */
+  knifeCharge: number;
+  /** Whether a fire direction was held last tick (to detect release → throw). */
+  knifeFiring: boolean;
+  /** Active thrown knife (it has left the hand), or null when the blade is held. */
+  knifeThrow: KnifeThrow | null;
+}
+
+/** A knife in flight: out to `maxDist` then back to the player. */
+export interface KnifeThrow {
+  pos: Vec2;
+  dir: Vec2;
+  dist: number;
+  maxDist: number;
+  /** true = flying outward, false = returning to the player. */
+  out: boolean;
+  /** Enemy ids already hit this leg (cleared when it turns back, so it can hit again). */
+  hits: number[];
 }
 
 /**
@@ -169,6 +251,8 @@ export interface InputState {
   moveY: number;
   aimX?: number;
   aimY?: number;
+  /** Edge-triggered: true on the tick the "use active item" key is pressed. */
+  useItem?: boolean;
 }
 
 export const NO_INPUT: InputState = { moveX: 0, moveY: 0, aimX: 0, aimY: 0 };
@@ -177,9 +261,15 @@ export const NO_INPUT: InputState = { moveX: 0, moveY: 0, aimX: 0, aimY: 0 };
 export interface RoomRuntime {
   enemies: Enemy[];
   pickups: Pickup[];
-  /** Static spike-trap positions (tile centers). */
-  traps: Vec2[];
+  /** Static floor traps (spikes / pits) at tile centers. */
+  traps: Trap[];
   spawned: boolean;
+  /**
+   * Items this room will offer (treasure: 1; shop: up to 2), reserved from the
+   * run-wide bag at floor-build time so each item appears at most once per run.
+   * Assigned before any room is entered, so it's independent of the path taken.
+   */
+  offerItems: string[];
 }
 
 /**
@@ -201,12 +291,18 @@ export interface GameState {
   projectiles: Projectile[];
   /** Item pickups in the current room (aliases the current room's runtime array). */
   pickups: Pickup[];
-  /** Spike traps in the current room (aliases the current room's runtime array). */
-  traps: Vec2[];
+  /** Floor traps in the current room (aliases the current room's runtime array). */
+  traps: Trap[];
+  /** Where the player spawned in the current room (pits send them back here). */
+  entryPos: Vec2;
   roomRuntimes: Map<RoomId, RoomRuntime>;
   doors: Door[];
   /** Whether the current room's doors are open (true when no enemies remain). */
   doorsOpen: boolean;
+  /** Rooms whose locked door (shop/treasure) has been opened with a key this floor. */
+  unlocked: Set<RoomId>;
+  /** Whether the whole floor is revealed on the minimap (Dungeon Map active item). */
+  mapRevealed: boolean;
   /** Run lifecycle: 'playing', or terminal 'dead' / 'won'. */
   status: RunStatus;
   /** Set once the boss is defeated; the victory teleporter then exists in the boss room. */
@@ -219,12 +315,55 @@ export interface GameState {
   dungeonOpts: DungeonOptions;
   /** Monotonic id source for spawned entities (deterministic). */
   nextEntityId: number;
+  /**
+   * Remaining items the run can still offer, drawn without replacement so each
+   * item appears at most once per run. Consumed in floor order as floors build.
+   */
+  itemBag: string[];
 }
 
 export interface NewGameOptions {
   dungeon?: DungeonOptions;
   /** Force this many enemies into the START room (default 0 — start is safe). */
   enemyCount?: number;
+  /** Which playable character to start as (default: the Wanderer / baseline). */
+  characterId?: string;
+}
+
+/**
+ * Applies a character's absolute stat overrides and starting gear to a fresh
+ * player. Items are applied via the normal item path (so they stack correctly);
+ * an active item is placed in the slot fully charged. A missing/unknown character
+ * is a no-op (the baseline Wanderer).
+ */
+function applyCharacter(player: Player, character: Character | undefined): void {
+  if (!character) return;
+  const s = character.stats;
+  if (s) {
+    if (s.maxHp !== undefined) {
+      player.maxHp = s.maxHp;
+      player.hp = s.maxHp;
+    }
+    if (s.speed !== undefined) player.speed = s.speed;
+    if (s.tearDamage !== undefined) player.tearDamage = s.tearDamage;
+    if (s.tearRange !== undefined) player.tearRange = s.tearRange;
+    if (s.fireRate !== undefined) player.fireRate = s.fireRate;
+    if (s.shotCount !== undefined) player.shotCount = s.shotCount;
+  }
+  for (const id of character.items ?? []) {
+    const item = getItem(id);
+    if (item) applyItem(player, item);
+  }
+  if (character.activeItem) {
+    const item = getItem(character.activeItem);
+    if (item?.active) {
+      player.activeItem = item.id;
+      player.activeCharge = item.active.charge; // start ready to use
+      player.items.push(item.id);
+    }
+  }
+  player.coins += character.coins ?? 0;
+  player.keys += character.keys ?? 0;
 }
 
 /** Deterministic seed for a floor's dungeon layout. */
@@ -233,6 +372,12 @@ function floorSeed(seed: number, floor: number): number {
   h = Math.imul(h ^ floor, 2246822519);
   h ^= h >>> 13;
   return h >>> 0;
+}
+
+/** The run's item bag: ITEM_POOL shuffled once, deterministically, per seed. */
+function makeItemBag(seed: number): string[] {
+  const h = Math.imul(seed ^ 0x27d4eb2f, 2654435761) >>> 0;
+  return new Rng(h).shuffle([...ITEM_POOL]);
 }
 
 /** Deterministic seed for a room's reward roll (independent of the spawn seed). */
@@ -260,21 +405,34 @@ export function createGame(seed: number, opts: NewGameOptions = {}): GameState {
     radius: PLAYER_RADIUS,
     speed: PLAYER_SPEED,
     tearDamage: PLAYER_TEAR_DAMAGE,
+    tearRange: PLAYER_TEAR_RANGE,
     fireRate: PLAYER_FIRE_RATE,
     items: [],
     tearEffects: [],
     shotCount: 1,
     piercing: false,
     homing: false,
+    flying: false,
     coins: 0,
     keys: 0,
     fireCooldown: 0,
     invuln: 0,
+    shotsFired: 0,
+    activeItem: null,
+    activeCharge: 0,
+    familiars: [],
+    knife: false,
+    knifeDir: { x: 1, y: 0 },
+    knifeCharge: 0,
+    knifeFiring: false,
+    knifeThrow: null,
     hp: 6,
     maxHp: 6,
     attack: 3,
     defense: 0,
   };
+  // No characterId = the neutral baseline (used by tests and balance sims).
+  if (opts.characterId !== undefined) applyCharacter(player, getCharacter(opts.characterId));
   const state: GameState = {
     seed,
     rng: new Rng(seed),
@@ -286,15 +444,19 @@ export function createGame(seed: number, opts: NewGameOptions = {}): GameState {
     projectiles: [],
     pickups: [],
     traps: [],
+    entryPos: { x: ROOM_W / 2, y: ROOM_H / 2 },
     roomRuntimes: new Map(),
     doors: [],
     doorsOpen: true,
+    unlocked: new Set(),
+    mapRevealed: false,
     status: 'playing',
     bossDefeated: false,
     graceTimer: 0,
     floor: 1,
     dungeonOpts: opts.dungeon ?? DEFAULT_DUNGEON,
     nextEntityId: 1,
+    itemBag: makeItemBag(seed),
   };
   // Floor 1 keeps the start-room enemy override (used by tests); later floors are safe.
   buildFloor(state, 1, opts.enemyCount ?? 0);
@@ -318,14 +480,36 @@ function buildFloor(state: GameState, floor: number, startEnemies: number): void
     minibossRooms: floor <= 4 ? 1 : 2,
   };
   state.dungeon = generateDungeon(new Rng(floorSeed(state.seed, floor)), opts);
+  state.unlocked = new Set(); // locked doors re-lock on every new floor
+  state.mapRevealed = false; // the map fogs over again on a new floor
   state.roomRuntimes = new Map();
   for (const id of state.dungeon.rooms.keys()) {
-    state.roomRuntimes.set(id, { enemies: [], pickups: [], traps: [], spawned: false });
+    state.roomRuntimes.set(id, { enemies: [], pickups: [], traps: [], spawned: false, offerItems: [] });
   }
+  reserveFloorItems(state);
   state.bossDefeated = false;
   state.projectiles = [];
   populateRoom(state, state.dungeon.startRoom, startEnemies);
   enterRoom(state, state.dungeon.startRoom);
+}
+
+/**
+ * Reserves items from the run-wide bag for this floor's item-bearing rooms, so
+ * each item appears at most once per run. Rooms are visited in ascending id order
+ * (canonical, path-independent): treasure takes 1, a shop up to 2, and the floor
+ * boss 1 (dropped on death). When the bag is empty, those rooms simply offer none.
+ */
+function reserveFloorItems(state: GameState): void {
+  const ids = [...state.dungeon.rooms.keys()].sort((a, b) => a - b);
+  for (const id of ids) {
+    const room = state.dungeon.rooms.get(id);
+    const rt = state.roomRuntimes.get(id);
+    if (!room || !rt) continue;
+    const want = room.type === 'shop' ? 2 : room.type === 'treasure' || room.type === 'boss' ? 1 : 0;
+    for (let i = 0; i < want && state.itemBag.length > 0; i++) {
+      rt.offerItems.push(state.itemBag.shift()!);
+    }
+  }
 }
 
 /** Descends to the next floor, carrying the player's progression along. */
@@ -377,16 +561,17 @@ export function populateRoom(state: GameState, roomId: RoomId, forcedCount?: num
     return;
   }
 
-  // A treasure room offers one item to collect for free, chosen deterministically.
-  if (forcedCount === undefined && room.type === 'treasure' && ITEM_POOL.length > 0) {
-    const itemId = rng.pick(ITEM_POOL);
-    rt.pickups.push(makePickup(state.nextEntityId++, center, itemId));
+  // A treasure room offers one item (reserved from the run bag, so never a dupe).
+  // An empty bag means no item — expected once the small pool is exhausted.
+  if (forcedCount === undefined && room.type === 'treasure' && rt.offerItems.length > 0) {
+    rt.pickups.push(makePickup(state.nextEntityId++, center, rt.offerItems[0]!));
   }
 
-  // A shop offers priced stock: two items and a heart, spread across the room.
-  // Kept off the vertical center so the (no-door) center spawn never lands on stock.
-  if (forcedCount === undefined && room.type === 'shop' && ITEM_POOL.length > 0) {
-    const stock = rng.shuffle(ITEM_POOL).slice(0, 2);
+  // A shop offers priced stock: its reserved items (up to two) and a heart,
+  // spread across the room. Kept off the vertical center so the (no-door) center
+  // spawn never lands on stock.
+  if (forcedCount === undefined && room.type === 'shop') {
+    const stock = rt.offerItems;
     const slots = [4, ROOM_W / 2, ROOM_W - 4];
     const shopY = center.y - 1.5;
     stock.forEach((itemId, i) => {
@@ -400,13 +585,21 @@ export function populateRoom(state: GameState, roomId: RoomId, forcedCount?: num
 
   let count: number;
   if (forcedCount !== undefined) count = forcedCount;
-  else if (room.type === 'normal') count = rng.range(2, 4) + tier * ENEMIES_PER_FLOOR;
+  else if (room.type === 'normal') {
+    // Scale the base count with the room's interior area so larger rooms don't
+    // feel empty (roughly one enemy per TILES_PER_ENEMY tiles), then add the
+    // per-floor difficulty bump.
+    const interior = (ROOM_W - 2) * (ROOM_H - 2);
+    const baseCount = Math.max(2, Math.round(interior / TILES_PER_ENEMY));
+    count = rng.range(baseCount, baseCount + 3) + tier * ENEMIES_PER_FLOOR;
+  }
   else count = 0; // start, treasure, shop
 
   // Available archetypes grow with the floor, so deeper floors feel more varied.
-  const kindPool: EnemyKind[] = ['chaser', 'swarmer'];
-  if (state.floor >= 2) kindPool.push('shooter');
-  if (state.floor >= 3) kindPool.push('tank');
+  const kindPool: EnemyKind[] = ['chaser', 'swarmer', 'fly'];
+  if (state.floor >= 2) kindPool.push('shooter', 'charger');
+  if (state.floor >= 3) kindPool.push('tank', 'exploder');
+  if (state.floor >= 4) kindPool.push('splitter');
 
   let placed = 0;
   let attempts = 0;
@@ -432,22 +625,31 @@ export function populateRoom(state: GameState, roomId: RoomId, forcedCount?: num
     placed++;
   }
 
-  // Some combat rooms are trapped with spikes. Drawn from the same room rng
-  // after enemy placement (so enemy layouts are unchanged), kept away from the
-  // room center so a door/centre arrival isn't standing on one.
-  if (forcedCount === undefined && room.type === 'normal' && rng.chance(TRAP_ROOM_CHANCE)) {
-    const trapCount = rng.range(TRAP_MIN, TRAP_MAX);
-    let t = 0;
-    let tries = 0;
-    while (t < trapCount && tries < trapCount * 20) {
-      tries++;
-      const tx = rng.range(1, ROOM_W - 2);
-      const ty = rng.range(1, ROOM_H - 2);
-      const pos: Vec2 = { x: tx + 0.5, y: ty + 0.5 };
-      if (Math.hypot(pos.x - center.x, pos.y - center.y) < 2) continue;
-      rt.traps.push(pos);
-      t++;
-    }
+  // Some combat rooms are trapped. Drawn from the same room rng after enemy
+  // placement (so enemy layouts are unchanged). Traps avoid the room center AND
+  // a clearance around every door, so none sit right in front of an entrance.
+  if (forcedCount === undefined && room.type === 'normal') {
+    const grid = makeRoomGrid();
+    const doorPts = computeDoors(state.dungeon, roomId).map((d) => doorWorldPos(grid, d.dir));
+    const blocked = (p: Vec2): boolean =>
+      Math.hypot(p.x - center.x, p.y - center.y) < 2 ||
+      doorPts.some((dp) => Math.hypot(p.x - dp.x, p.y - dp.y) < DOOR_TRAP_CLEARANCE);
+
+    const placeTraps = (chance: number, min: number, max: number, kind: TrapKind): void => {
+      if (!rng.chance(chance)) return;
+      const n = rng.range(min, max);
+      let placed = 0;
+      let tries = 0;
+      while (placed < n && tries < n * 20) {
+        tries++;
+        const pos: Vec2 = { x: rng.range(1, ROOM_W - 2) + 0.5, y: rng.range(1, ROOM_H - 2) + 0.5 };
+        if (blocked(pos)) continue;
+        rt.traps.push(makeTrap(pos, kind));
+        placed++;
+      }
+    };
+    placeTraps(TRAP_ROOM_CHANCE, TRAP_MIN, TRAP_MAX, 'spike');
+    placeTraps(PIT_ROOM_CHANCE, PIT_MIN, PIT_MAX, 'pit');
   }
 }
 
@@ -470,7 +672,7 @@ export function enterRoom(state: GameState, roomId: RoomId, fromDir?: Direction)
   state.grid = makeRoomGrid();
   state.doorsOpen = state.enemies.length === 0;
   if (state.doorsOpen) {
-    for (const d of state.doors) carveDoor(state.grid, d.dir);
+    for (const d of state.doors) if (!isDoorLocked(state, d)) carveDoor(state.grid, d.dir);
   }
   state.graceTimer = GRACE_PERIOD; // brief reprieve so the player isn't hit on arrival
   state.player.vel = { x: 0, y: 0 };
@@ -483,6 +685,9 @@ export function enterRoom(state: GameState, roomId: RoomId, fromDir?: Direction)
       ? entryPosition(state.grid, opposite(fromDir))
       : { x: state.grid.width / 2, y: state.grid.height / 2 };
   }
+  state.entryPos = { x: state.player.pos.x, y: state.player.pos.y }; // pits return here
+  // Snap familiars to the player so they don't streak across the new room.
+  for (const fam of state.player.familiars) fam.pos = { x: state.player.pos.x, y: state.player.pos.y };
 }
 
 /**
@@ -497,7 +702,10 @@ export function tick(state: GameState, input: InputState, dt: number): void {
   const enemiesActive = state.graceTimer <= 0;
   stepPlayerMovement(state, input, dt);
   stepPickups(state);
+  stepUseItem(state, input); // spend the active item if used and charged
   stepFiring(state, input, dt);
+  stepKnife(state, input, dt); // melee blade (replaces tears) when the knife is held
+  stepFamiliarsTick(state, dt); // familiars follow the player and shooters fire
   // Enemies always recoil from hits (knockback), but only chase/attack once grace ends.
   stepEnemies(state, dt, enemiesActive);
   stepProjectiles(state, dt);
@@ -513,6 +721,7 @@ export function tick(state: GameState, input: InputState, dt: number): void {
   stepRoomClear(state); // opens doors; flags bossDefeated in the boss room
   stepTeleporter(state); // win by reaching the teleporter after the boss falls
   if (state.status !== 'playing') return;
+  stepUnlockDoors(state); // spend a key to open a shop/treasure door walked into
   stepDoors(state);
 }
 
@@ -532,7 +741,14 @@ function stepPickups(state: GameState): void {
   const { player } = state;
   for (let i = state.pickups.length - 1; i >= 0; i--) {
     const pickup = state.pickups[i]!;
-    if (!circlesOverlap(player.pos, player.radius, pickup.pos, pickup.radius)) continue;
+    const overlapping = circlesOverlap(player.pos, player.radius, pickup.pos, pickup.radius);
+    // A just-dropped item (armed === false) arms once the player steps off it,
+    // so swapping an active item doesn't instantly re-collect the dropped one.
+    if (pickup.armed === false) {
+      if (!overlapping) pickup.armed = true;
+      continue;
+    }
+    if (!overlapping) continue;
 
     if (pickup.kind === 'coin') {
       player.coins += pickup.value;
@@ -549,15 +765,320 @@ function stepPickups(state: GameState): void {
     } else {
       if (player.coins < pickup.cost) continue; // can't afford (shop)
       const item = getItem(pickup.itemId);
-      if (item) applyItem(player, item);
+      if (!item) {
+        state.pickups.splice(i, 1);
+        continue;
+      }
       player.coins -= pickup.cost;
+      if (item.active) {
+        // Usable item: goes into the single active slot. If one was already held,
+        // it's dropped here as a free, disarmed pickup (swap). Starts fully charged.
+        if (player.activeItem) {
+          const drop = makePickup(state.nextEntityId++, pickup.pos, player.activeItem, 0);
+          drop.armed = false; // don't re-collect it while the player stands on it
+          state.pickups.push(drop);
+        }
+        player.activeItem = item.id;
+        player.activeCharge = item.active.charge; // picked up ready to use
+        player.items.push(item.id); // log the acquisition
+      } else {
+        applyItem(player, item);
+      }
       state.pickups.splice(i, 1);
     }
   }
 }
 
+/**
+ * Advances each familiar by one cleared room and lets it act. The key-dropper
+ * drops a key into the current room every `interval` rooms. Deterministic.
+ */
+function stepFamiliarsOnClear(state: GameState): void {
+  const { player } = state;
+  const cx = ROOM_W / 2 + 2; // drop column, offset right of the room's reward drops
+  const cy = ROOM_H / 2;
+  for (const fam of player.familiars) {
+    fam.roomTimer += 1;
+    if (fam.roomTimer < fam.interval) continue;
+    fam.roomTimer = 0;
+    const id = state.nextEntityId++;
+    if (fam.kind === 'key-dropper') {
+      state.pickups.push(makeKey(id, { x: cx, y: cy }));
+    } else if (fam.kind === 'heart-dropper') {
+      state.pickups.push(makeHeart(id, { x: cx, y: cy - 2 }, HEART_HEAL, 0));
+    } else {
+      state.pickups.push(makeCoin(id, { x: cx, y: cy + 2 }, 1));
+    }
+  }
+}
+
+/** Smoothing factor for how quickly a familiar eases toward its follow spot. */
+const FAMILIAR_FOLLOW = 0.18;
+/** Distance a familiar hovers from the player, in tiles. */
+const FAMILIAR_ORBIT = 1.1;
+
+/** Nearest living enemy to a point, or undefined if none remain. */
+function nearestEnemyTo(state: GameState, from: Vec2): Enemy | undefined {
+  let best: Enemy | undefined;
+  let bestDist = Infinity;
+  for (const e of state.enemies) {
+    if (e.hp <= 0) continue;
+    const d = Math.hypot(e.pos.x - from.x, e.pos.y - from.y);
+    if (d < bestDist) {
+      bestDist = d;
+      best = e;
+    }
+  }
+  return best;
+}
+
+/**
+ * Per-tick familiar update: each familiar eases toward a spot beside the player,
+ * and shooter familiars fire at the nearest enemy within range on their cadence.
+ * Their tears are player-sourced (so the existing projectile collision applies).
+ * Deterministic: positions/targets derive from state, never from randomness.
+ */
+function stepFamiliarsTick(state: GameState, dt: number): void {
+  const { player } = state;
+  player.familiars.forEach((fam, i) => {
+    // Follow: ease toward a fanned-out spot around the player.
+    const angle = Math.PI * 0.75 + i * 0.8;
+    const tx = player.pos.x + Math.cos(angle) * FAMILIAR_ORBIT;
+    const ty = player.pos.y + Math.sin(angle) * FAMILIAR_ORBIT;
+    fam.pos = {
+      x: fam.pos.x + (tx - fam.pos.x) * FAMILIAR_FOLLOW,
+      y: fam.pos.y + (ty - fam.pos.y) * FAMILIAR_FOLLOW,
+    };
+
+    if (fam.damage <= 0) return; // droppers don't shoot
+    fam.fireCooldown = Math.max(0, fam.fireCooldown - dt);
+    if (fam.fireCooldown > 0) return;
+    const target = nearestEnemyTo(state, fam.pos);
+    if (!target) return;
+    const dx = target.pos.x - fam.pos.x;
+    const dy = target.pos.y - fam.pos.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    if (dist > fam.range) return; // hold fire if it would just fall short
+    const base = Math.atan2(dy, dx);
+    const n = Math.max(1, fam.shots);
+    const life = fam.range / PROJECTILE_SPEED;
+    for (let j = 0; j < n; j++) {
+      const a = base + (j - (n - 1) / 2) * MULTISHOT_SPREAD;
+      state.projectiles.push(
+        makeProjectile(
+          state.nextEntityId++,
+          fam.pos,
+          { x: Math.cos(a) * PROJECTILE_SPEED, y: Math.sin(a) * PROJECTILE_SPEED },
+          fam.damage,
+          life,
+          'player',
+          [],
+          { piercing: fam.piercing },
+        ),
+      );
+    }
+    fam.fireCooldown = fam.fireInterval;
+  });
+}
+
+/** Shortest distance from point `p` to the segment `a`–`b`. */
+function pointSegmentDist(p: Vec2, a: Vec2, b: Vec2): number {
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const len2 = abx * abx + aby * aby;
+  const t = len2 > 0 ? ((p.x - a.x) * abx + (p.y - a.y) * aby) / len2 : 0;
+  const tc = Math.max(0, Math.min(1, t));
+  const cx = a.x + abx * tc;
+  const cy = a.y + aby * tc;
+  return Math.hypot(p.x - cx, p.y - cy);
+}
+
+/**
+ * Mom's Knife: a melee blade held in front of the player. It points along the
+ * direction the player is heading (aim if firing, else movement, else its last
+ * facing), and damages any enemy it overlaps — no input needed. Holding a fire
+ * direction charges it, extending the reach from KNIFE_BASE_REACH up to
+ * KNIFE_MAX_REACH; letting go retracts it. Damage pulses on a fixed cadence so
+ * the blade is strong but not an instant delete. Deterministic.
+ */
+function stepKnife(state: GameState, input: InputState, dt: number): void {
+  const { player } = state;
+  if (!player.knife) return;
+  if (player.knifeThrow) {
+    stepKnifeFlight(state, dt); // the blade has left the hand
+    return;
+  }
+
+  const ax = input.aimX ?? 0;
+  const ay = input.aimY ?? 0;
+  const firing = Math.hypot(ax, ay) > 0;
+
+  // Releasing the fire keys throws the knife — in the direction it was CHARGED
+  // (the last aim), regardless of where the player is now heading. Checked before
+  // we re-orient to movement, so a same-tick turn can't redirect the throw.
+  if (player.knifeFiring && !firing) {
+    const maxDist = KNIFE_BASE_REACH + player.knifeCharge * (KNIFE_MAX_REACH - KNIFE_BASE_REACH);
+    player.knifeThrow = {
+      pos: { x: player.pos.x, y: player.pos.y },
+      dir: { x: player.knifeDir.x, y: player.knifeDir.y },
+      dist: 0,
+      maxDist,
+      out: true,
+      hits: [],
+    };
+    player.knifeCharge = 0;
+    player.knifeFiring = false;
+    return;
+  }
+
+  // Facing: aim while charging, else movement, else keep the last facing.
+  if (firing) {
+    const l = Math.hypot(ax, ay);
+    player.knifeDir = { x: ax / l, y: ay / l };
+  } else if (Math.hypot(input.moveX, input.moveY) > 0) {
+    const l = Math.hypot(input.moveX, input.moveY);
+    player.knifeDir = { x: input.moveX / l, y: input.moveY / l };
+  }
+  player.knifeFiring = firing;
+
+  // Charging only stores energy for the throw — the held blade does NOT extend.
+  player.knifeCharge = firing
+    ? Math.min(1, player.knifeCharge + dt / KNIFE_CHARGE_TIME)
+    : Math.max(0, player.knifeCharge - dt / KNIFE_CHARGE_TIME);
+
+  const tip: Vec2 = {
+    x: player.pos.x + player.knifeDir.x * KNIFE_BASE_REACH,
+    y: player.pos.y + player.knifeDir.y * KNIFE_BASE_REACH,
+  };
+
+  // Held-blade damage pulses on a cadence (reuse fireCooldown, unused by tears here).
+  player.fireCooldown = Math.max(0, player.fireCooldown - dt);
+  if (player.fireCooldown > 0) return;
+  let hit = false;
+  for (const enemy of state.enemies) {
+    if (enemy.hp <= 0) continue;
+    if (pointSegmentDist(enemy.pos, player.pos, tip) <= KNIFE_HALF_WIDTH + enemy.radius) {
+      applyDamage(enemy, player.tearDamage);
+      applyKnockback(enemy, { x: player.knifeDir.x, y: player.knifeDir.y });
+      hit = true;
+    }
+  }
+  if (hit) {
+    player.fireCooldown = KNIFE_HIT_INTERVAL;
+    reapDeadEnemies(state);
+  }
+}
+
+/**
+ * Advances a thrown knife: it flies out along its direction to `maxDist`, then
+ * homes back to the (possibly moved) player and is caught. It damages each enemy
+ * once per leg (out, then back). Deterministic.
+ */
+function stepKnifeFlight(state: GameState, dt: number): void {
+  const { player } = state;
+  const t = player.knifeThrow!;
+  const step = KNIFE_THROW_SPEED * dt;
+  if (t.out) {
+    t.pos = { x: t.pos.x + t.dir.x * step, y: t.pos.y + t.dir.y * step };
+    t.dist += step;
+    if (t.dist >= t.maxDist) {
+      t.out = false;
+      t.hits = []; // the return leg can hit each enemy again
+    }
+  } else {
+    const dx = player.pos.x - t.pos.x;
+    const dy = player.pos.y - t.pos.y;
+    const d = Math.hypot(dx, dy);
+    if (d <= step + 0.3) {
+      player.knifeThrow = null; // caught
+      return;
+    }
+    t.pos = { x: t.pos.x + (dx / d) * step, y: t.pos.y + (dy / d) * step };
+  }
+
+  let hit = false;
+  for (const enemy of state.enemies) {
+    if (enemy.hp <= 0 || t.hits.includes(enemy.id)) continue;
+    if (Math.hypot(enemy.pos.x - t.pos.x, enemy.pos.y - t.pos.y) <= KNIFE_HALF_WIDTH + enemy.radius) {
+      applyDamage(enemy, player.tearDamage);
+      applyKnockback(enemy, t.dir);
+      t.hits.push(enemy.id);
+      hit = true;
+    }
+  }
+  if (hit) reapDeadEnemies(state);
+}
+
+/** Adds one charge (capped) to the held active item; called when a room clears. */
+function chargeActiveItem(state: GameState): void {
+  const { player } = state;
+  if (!player.activeItem) return;
+  const item = getItem(player.activeItem);
+  if (!item?.active) return;
+  player.activeCharge = Math.min(item.active.charge, player.activeCharge + 1);
+}
+
+/** Uses the held active item when the use key is pressed and it's fully charged. */
+function stepUseItem(state: GameState, input: InputState): void {
+  if (!input.useItem) return;
+  const { player } = state;
+  if (!player.activeItem) return;
+  const item = getItem(player.activeItem);
+  if (!item?.active) return;
+  if (player.activeCharge < item.active.charge) return; // not ready
+
+  // Apply the effect(s). `used` gates the charge spend so a no-op (e.g. a reroll
+  // in a room with no items) doesn't waste the charge.
+  let used = false;
+  const a = item.active;
+  if (a.heal) {
+    heal(player, a.heal);
+    used = true;
+  }
+  if (a.coins) {
+    player.coins += a.coins;
+    used = true;
+  }
+  if (a.reroll && rerollRoomItems(state)) used = true;
+  if (a.revealMap && !state.mapRevealed) {
+    state.mapRevealed = true;
+    used = true;
+  }
+
+  if (used) player.activeCharge = 0; // spent
+}
+
+/**
+ * Rerolls the item pickups lying in the current room (treasure / shop) into fresh
+ * items from the run bag, returning the old ones to the back of the bag (so the
+ * pool is preserved and stays duplicate-free). Costs/positions are kept. Returns
+ * true if at least one item was rerolled. Deterministic: draws from the bag order.
+ */
+function rerollRoomItems(state: GameState): boolean {
+  const newOffers: string[] = [];
+  let rerolled = false;
+  for (const p of state.pickups) {
+    if (p.kind !== 'item') continue;
+    if (state.itemBag.length === 0) {
+      newOffers.push(p.itemId); // bag dry: leave this one as-is
+      continue;
+    }
+    const fresh = state.itemBag.shift()!;
+    state.itemBag.push(p.itemId); // old item goes back into circulation
+    p.itemId = fresh;
+    newOffers.push(fresh);
+    rerolled = true;
+  }
+  if (rerolled) {
+    const rt = state.roomRuntimes.get(state.currentRoom);
+    if (rt) rt.offerItems = newOffers;
+  }
+  return rerolled;
+}
+
 function stepFiring(state: GameState, input: InputState, dt: number): void {
   const { player } = state;
+  if (player.knife) return; // the knife replaces tears (see stepKnife)
   player.fireCooldown = Math.max(0, player.fireCooldown - dt);
   const ax = input.aimX ?? 0;
   const ay = input.aimY ?? 0;
@@ -565,6 +1086,9 @@ function stepFiring(state: GameState, input: InputState, dt: number): void {
   if (len > 0 && player.fireCooldown <= 0) {
     const base = Math.atan2(ay, ax);
     const n = Math.max(1, player.shotCount);
+    // A tear lives just long enough to travel its range, then falls — so it
+    // can't cross the room. life = distance / speed.
+    const life = player.tearRange / PROJECTILE_SPEED;
     for (let i = 0; i < n; i++) {
       const angle = base + (i - (n - 1) / 2) * MULTISHOT_SPREAD;
       const vel: Vec2 = { x: Math.cos(angle) * PROJECTILE_SPEED, y: Math.sin(angle) * PROJECTILE_SPEED };
@@ -574,7 +1098,7 @@ function stepFiring(state: GameState, input: InputState, dt: number): void {
           player.pos,
           vel,
           player.tearDamage,
-          PROJECTILE_LIFE,
+          life,
           'player',
           [...player.tearEffects],
           { piercing: player.piercing, homing: player.homing },
@@ -582,6 +1106,7 @@ function stepFiring(state: GameState, input: InputState, dt: number): void {
       );
     }
     player.fireCooldown = 1 / player.fireRate;
+    player.shotsFired++; // one per trigger pull (render cues the tear sound off this)
   }
 }
 
@@ -630,8 +1155,32 @@ function stepEnemies(state: GameState, dt: number, active: boolean): void {
       vx = ux * speed * advance;
       vy = uy * speed * advance;
       stepBossAttacks(state, enemy, ux, uy, dt);
+    } else if (enemy.kind === 'fly') {
+      // Buzz toward the player with a perpendicular wobble (erratic flight).
+      enemy.aiTimer += dt;
+      const wob = Math.sin(enemy.aiTimer * FLY_WOBBLE_FREQ) * FLY_WOBBLE_AMP;
+      vx = (ux - uy * wob) * speed;
+      vy = (uy + ux * wob) * speed;
+    } else if (enemy.kind === 'charger') {
+      // Cycle: lock a direction, telegraph (hold), dash along it, recover.
+      if (enemy.aiTimer <= 0) {
+        enemy.aiDir = { x: ux, y: uy };
+        enemy.aiTimer = CHARGER_CYCLE;
+      }
+      enemy.aiTimer -= dt;
+      const elapsed = CHARGER_CYCLE - enemy.aiTimer;
+      const sf = slowFactor(enemy);
+      if (elapsed < CHARGER_WINDUP) {
+        // windup: stand still (telegraph)
+      } else if (elapsed < CHARGER_WINDUP + CHARGER_DASH) {
+        vx = enemy.aiDir.x * CHARGER_DASH_SPEED * sf;
+        vy = enemy.aiDir.y * CHARGER_DASH_SPEED * sf;
+      } else {
+        vx = ux * speed; // recover: drift toward the player
+        vy = uy * speed;
+      }
     } else {
-      // chaser / swarmer / tank: walk straight at the player.
+      // chaser / swarmer / tank / exploder / splitter: walk straight at the player.
       vx = ux * speed;
       vy = uy * speed;
     }
@@ -815,7 +1364,47 @@ function steerHoming(state: GameState, p: Projectile, dt: number): void {
 /** Removes dead enemies in place so `state.enemies` keeps aliasing the runtime array. */
 function reapDeadEnemies(state: GameState): void {
   for (let i = state.enemies.length - 1; i >= 0; i--) {
-    if (isDead(state.enemies[i]!)) state.enemies.splice(i, 1);
+    const enemy = state.enemies[i]!;
+    if (!isDead(enemy)) continue;
+    onEnemyDeath(state, enemy);
+    state.enemies.splice(i, 1);
+  }
+}
+
+/**
+ * Death side-effects for special archetypes. Runs once, just before the corpse
+ * is removed. Deterministic: positions derive from the dying enemy, not rng.
+ *  - exploder: a one-shot AoE blast that hurts the player if in range (and not
+ *    in i-frames), like Boom Fly.
+ *  - splitter: replaced by SPLITTER_CHILDREN flies fanned out around it (Globin).
+ * Children/blasts are appended after `i` in reapDeadEnemies, so they are not
+ * re-scanned this pass (alive enemies wouldn't be reaped anyway).
+ */
+function onEnemyDeath(state: GameState, enemy: Enemy): void {
+  if (enemy.kind === 'exploder') {
+    // The blast hits the player regardless of flight (flight only dodges floor
+    // traps), but respects i-frames so it can't stack with a same-tick hit.
+    const { player } = state;
+    if (player.invuln <= 0 && circlesOverlap(player.pos, player.radius, enemy.pos, EXPLODER_RADIUS)) {
+      applyDamage(player, EXPLODER_DAMAGE);
+      player.invuln = PLAYER_IFRAMES;
+    }
+    return;
+  }
+
+  if (enemy.kind === 'splitter') {
+    const tier = state.floor - 1;
+    const childHp = ENEMY_ARCHETYPES.fly.hp + tier * ENEMY_HP_PER_FLOOR;
+    const r = ENEMY_ARCHETYPES.fly.radius;
+    for (let c = 0; c < SPLITTER_CHILDREN; c++) {
+      const angle = (Math.PI * 2 * c) / SPLITTER_CHILDREN;
+      const off = enemy.radius + r;
+      const pos: Vec2 = {
+        x: Math.min(Math.max(enemy.pos.x + Math.cos(angle) * off, 1 + r), ROOM_W - 1 - r),
+        y: Math.min(Math.max(enemy.pos.y + Math.sin(angle) * off, 1 + r), ROOM_H - 1 - r),
+      };
+      state.enemies.push(makeEnemy(state.nextEntityId++, pos, { kind: 'fly', hp: childHp }));
+    }
   }
 }
 
@@ -850,16 +1439,24 @@ function stepContactDamage(state: GameState, dt: number): void {
 }
 
 /**
- * Spike traps damage the player on contact, then trigger i-frames like any hit.
- * `invuln` is already decremented this tick by stepContactDamage (which runs
- * first), so a same-tick enemy hit takes precedence and the trap is absorbed.
+ * Floor traps. Spikes damage the player; pits send them back to the room's
+ * entrance. Flight (wings) makes the player immune. `invuln` is already
+ * decremented this tick by stepContactDamage (which runs first), so a same-tick
+ * enemy hit takes precedence and the trap is absorbed.
  */
 function stepTraps(state: GameState): void {
   const { player } = state;
+  if (player.flying) return; // wings carry you over every floor hazard
   if (player.invuln > 0) return;
   for (const trap of state.traps) {
-    if (circlesOverlap(player.pos, player.radius, trap, TRAP_RADIUS)) {
-      applyDamage(player, TRAP_DAMAGE);
+    if (circlesOverlap(player.pos, player.radius, trap.pos, TRAP_RADIUS)) {
+      if (trap.kind === 'pit') {
+        applyDamage(player, PIT_DAMAGE);
+        player.pos = { x: state.entryPos.x, y: state.entryPos.y };
+        player.vel = { x: 0, y: 0 };
+      } else {
+        applyDamage(player, TRAP_DAMAGE);
+      }
       player.invuln = PLAYER_IFRAMES;
       break;
     }
@@ -870,12 +1467,22 @@ function stepTraps(state: GameState): void {
 function stepRoomClear(state: GameState): void {
   if (state.doorsOpen || state.enemies.length > 0) return;
   state.doorsOpen = true;
-  for (const d of state.doors) carveDoor(state.grid, d.dir);
+  for (const d of state.doors) if (!isDoorLocked(state, d)) carveDoor(state.grid, d.dir);
   const room = state.dungeon.rooms.get(state.currentRoom);
   if (room) room.cleared = true;
+  chargeActiveItem(state); // clearing a room tops up the held active item
+  stepFamiliarsOnClear(state); // familiars act each cleared room (e.g. drop a key)
   // Beating the boss no longer wins instantly: it drops a teleporter and leaves
-  // the floor open so the player can backtrack before choosing to finish.
-  if (state.currentRoom === state.dungeon.bossRoom) state.bossDefeated = true;
+  // the floor open so the player can backtrack before choosing to finish. It also
+  // drops a reward item (the reserved bag item; a heart if the bag is empty),
+  // placed at the room center, on the path to the teleporter. Mini-bosses don't.
+  if (room && state.currentRoom === state.dungeon.bossRoom) {
+    state.bossDefeated = true;
+    const reward = room.type === 'boss' ? state.roomRuntimes.get(state.currentRoom)?.offerItems[0] : undefined;
+    const at: Vec2 = { x: ROOM_W / 2, y: ROOM_H / 2 };
+    if (reward) state.pickups.push(makePickup(state.nextEntityId++, at, reward, 0));
+    else state.pickups.push(makeHeart(state.nextEntityId++, at, HEART_HEAL, 0));
+  }
 
   // Combat rooms (not the boss) may drop a healing heart. The roll is a pure
   // function of (seed, floor, roomId), so it fires at most once per room and is
@@ -910,12 +1517,52 @@ function stepTeleporter(state: GameState): void {
   }
 }
 
-/** Transition to a neighbor when the player reaches an open door. */
+/**
+ * A door is locked while it leads into a not-yet-opened shop or treasure room.
+ * Locked doors are never carved, so the player can't pass until they spend a key.
+ */
+export function isDoorLocked(state: GameState, door: Door): boolean {
+  if (state.unlocked.has(door.to)) return false;
+  const type = state.dungeon.rooms.get(door.to)?.type;
+  return type === 'shop' || type === 'treasure';
+}
+
+/**
+ * Open a locked door the player walks into, if they have a key: spends one key,
+ * marks the room unlocked for the rest of the floor, and carves the opening so
+ * the regular door transition can carry them through on the following ticks.
+ */
+function stepUnlockDoors(state: GameState): void {
+  if (!state.doorsOpen || state.player.keys <= 0) return;
+  for (const d of state.doors) {
+    if (!isDoorLocked(state, d)) continue;
+    const o = doorWorldPos(state.grid, d.dir);
+    if (Math.hypot(state.player.pos.x - o.x, state.player.pos.y - o.y) < LOCK_UNLOCK_DIST) {
+      state.player.keys -= 1;
+      state.unlocked.add(d.to);
+      carveDoor(state.grid, d.dir);
+      return;
+    }
+  }
+}
+
+/**
+ * Transition to a neighbor when the player reaches an open door. The trigger is
+ * a rectangle, not a point: the player crosses when close to the wall along the
+ * door's normal (`DOOR_TRIGGER`) and anywhere within the widened gap along it
+ * (`DOOR_HALF_SPAN`), so you no longer have to thread the exact center tile.
+ */
 function stepDoors(state: GameState): void {
   if (!state.doorsOpen) return;
   for (const d of state.doors) {
+    if (isDoorLocked(state, d)) continue; // a still-locked door is impassable
     const o = doorWorldPos(state.grid, d.dir);
-    if (Math.hypot(state.player.pos.x - o.x, state.player.pos.y - o.y) < DOOR_TRIGGER) {
+    const dx = state.player.pos.x - o.x;
+    const dy = state.player.pos.y - o.y;
+    const horizontal = d.dir === 'up' || d.dir === 'down';
+    const perp = horizontal ? dy : dx; // toward/through the wall
+    const along = horizontal ? dx : dy; // across the opening span
+    if (Math.abs(perp) < DOOR_TRIGGER && Math.abs(along) < DOOR_HALF_SPAN) {
       enterRoom(state, d.to, d.dir);
       return;
     }

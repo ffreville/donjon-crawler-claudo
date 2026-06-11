@@ -3,6 +3,7 @@ import {
   createGame,
   enterRoom,
   FIXED_DT,
+  isDoorLocked,
   NO_INPUT,
   tick,
   type GameState,
@@ -45,13 +46,25 @@ describe('room navigation', () => {
   it('transitions to a neighbor when the player reaches an open door', () => {
     const s = createGame(1);
     expect(s.doorsOpen).toBe(true);
-    const door = s.doors[0]!;
+    // Pick an unlocked exit (shop/treasure doors stay shut without a key).
+    const door = s.doors.find((d) => !isDoorLocked(s, d)) ?? s.doors[0]!;
     const opening = doorWorldPos(s.grid, door.dir);
     s.player.pos = { x: opening.x, y: opening.y };
     tick(s, NO_INPUT, FIXED_DT);
     expect(s.currentRoom).toBe(door.to);
     // Player is repositioned inside the new room, not left on the doorway.
     expect(s.player.pos).not.toEqual(opening);
+  });
+
+  it('transitions when slightly off-center in the doorway', () => {
+    const s = createGame(1);
+    const door = s.doors.find((d) => !isDoorLocked(s, d)) ?? s.doors[0]!;
+    const o = doorWorldPos(s.grid, door.dir);
+    const horizontal = door.dir === 'up' || door.dir === 'down';
+    // Slightly off the exact center, still inside the 1-tile opening.
+    s.player.pos = horizontal ? { x: o.x + 0.4, y: o.y } : { x: o.x, y: o.y + 0.4 };
+    tick(s, NO_INPUT, FIXED_DT);
+    expect(s.currentRoom).toBe(door.to);
   });
 
   it('spawns room contents deterministically and independent of the path taken', () => {

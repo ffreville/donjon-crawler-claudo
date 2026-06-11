@@ -82,6 +82,30 @@ describe('generateDungeon', () => {
     );
   });
 
+  it('special rooms (boss/miniboss/shop/treasure) each have exactly one door', () => {
+    for (let seed = 0; seed < 40; seed++) {
+      const d = generateDungeon(new Rng(seed), { roomCount: 12, mapSize: 11 });
+      for (const room of d.rooms.values()) {
+        if (room.type === 'normal' || room.type === 'start') continue;
+        expect(room.neighbors).toHaveLength(1);
+      }
+    }
+  });
+
+  it('keeps specials single-door even with scaled-up counts', () => {
+    const d = generateDungeon(new Rng(11), {
+      roomCount: 20,
+      mapSize: 13,
+      treasureRooms: 3,
+      minibossRooms: 2,
+    });
+    for (const room of d.rooms.values()) {
+      if (room.type !== 'normal' && room.type !== 'start') {
+        expect(room.neighbors).toHaveLength(1);
+      }
+    }
+  });
+
   it('neighbor links are symmetric', () => {
     const d = generateDungeon(new Rng(55), { roomCount: 12, mapSize: 11 });
     for (const room of d.rooms.values()) {
