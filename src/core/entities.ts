@@ -39,10 +39,12 @@ export interface Enemy extends Combatant {
   bossVariant: number;
   /** Boss spiral accumulator (radians); ignored by non-boss kinds. */
   bossSpin: number;
-  /** Generic AI timer (fly wobble phase, charger dash cycle). */
+  /** Generic AI timer (fly wobble phase, charger dash cycle, ram-boss charge). */
   aiTimer: number;
-  /** Locked direction for a charger's dash. */
+  /** Locked direction for a charger's / ram-boss's dash. */
   aiDir: Vec2;
+  /** Ram-boss current dash speed (tiles/s); 0 = charging, >0 = dashing. */
+  dashSpeed: number;
 }
 
 export type ProjectileSource = 'player' | 'enemy';
@@ -205,6 +207,7 @@ export function makeEnemy(id: number, pos: Vec2, stats: EnemyStats = {}): Enemy 
     bossSpin: 0,
     aiTimer: 0,
     aiDir: { x: 0, y: 0 },
+    dashSpeed: 0,
     hp,
     maxHp: hp,
     attack: stats.attack ?? base.attack,

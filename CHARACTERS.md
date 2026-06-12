@@ -15,10 +15,13 @@ sert de référence de design.
   appliqué dans `createGame` via `applyCharacter`.
 - **Design unique.** Chaque personnage a sa propre texture pixel-art
   (`player-<id>`), utilisée en jeu comme sur l'écran de sélection.
-- **Tous démarrent avec une Spyglass** (+1 portée). Le `createGame` sans
-  `characterId` reste la *baseline neutre* (utilisée par les tests et les
-  simulations d'équilibrage) ; un personnage n'est appliqué que lorsqu'il est
-  explicitement choisi.
+- **Portée de base = 5** (le +1 historique de la Spyglass est désormais intégré
+  aux stats de base). Le `createGame` sans `characterId` reste la *baseline neutre*
+  (tests + simulations d'équilibrage) ; un personnage n'est appliqué que lorsqu'il
+  est explicitement choisi.
+- **Déblocage** : `lockedUntilWin: true` rend un personnage indisponible tant que
+  le jeu n'a pas été terminé une fois (succès `char-*-win`). Le **Tinker** est
+  verrouillé ainsi.
 
 ## Stats de base (référence)
 
@@ -49,9 +52,9 @@ sert de référence de design.
 | ID | Nom | Stats (vs base) | Départ | Design | Idée |
 |---|---|---|---|---|---|
 | `wanderer` | The Wanderer | — (base) | — | aventurier (peau claire / tunique brune) | équilibré, pour apprendre |
-| `brute` | The Brute | PV 8, dmg 5, vit 5, **portée 3** | **Mom's Knife** (test, à retirer avant la v1) | casque acier + plastron rouge | tank cogneur, lent et courte portée |
-| `scout` | The Scout | PV 4, vit 7.5, **portée 7**, dmg 2 | — | capuche verte pointue | rapide/longue portée, fragile |
-| `tinker` | The Tinker | PV 5, cadence 4 | Reroll Die (actif) + 3 pièces | lunettes laiton | utilitaire, tir rapide |
+| `brute` | The Brute | PV 8, dmg 5, vit 5, **portée 4** | **Mom's Knife** (test, à retirer avant la v1) | casque acier + plastron rouge | tank cogneur, lent et courte portée |
+| `scout` | The Scout | PV 4, vit 7.5, **portée 8**, dmg 2 | — | capuche verte pointue | rapide/longue portée, fragile |
+| `tinker` | The Tinker | PV 5, cadence 4 | Reroll Die (actif) + 3 pièces — **verrouillé** jusqu'à une victoire | lunettes laiton | utilitaire, tir rapide |
 | `hoarder` | The Hoarder | PV 5 | familier Flying Key + 4 pièces + 1 clé | robe dorée + emblème pièce | économie |
 | `gemini` | The Twins | PV 5, **2 tirs**, dmg 2 | — | deux têtes violettes, un seul corps | spray de larmes, dégâts faibles par tir |
 | `ember` | The Pyromancer | PV 5, dmg 2 | objet Fire Tears (brûlure) | flamme sur la tête + robe rouge | DoT/brûlure, hit direct faible |

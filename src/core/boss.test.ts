@@ -5,9 +5,11 @@ import {
   enterRoom,
   FIXED_DT,
   NO_INPUT,
+  RAM_CHARGE_TIME,
   tick,
   type GameState,
 } from './gameState.js';
+import { ROOM_H, ROOM_W } from './room.js';
 
 const enterBoss = (seed: number): GameState => {
   const s = createGame(seed);
@@ -120,6 +122,55 @@ describe('boss', () => {
       return s.projectiles.length;
     };
     expect(new Set([low(0), low(1), low(2)]).size).toBe(3); // 12 / 5 / 17
+  });
+
+  describe('ram boss (variant 3)', () => {
+    /** A boss room with the boss forced to the ram variant, centered, charging. */
+    const ramBoss = (seed: number): GameState => {
+      const s = enterBoss(seed);
+      const boss = s.enemies[0]!;
+      boss.bossVariant = 3;
+      boss.aiTimer = 0;
+      boss.dashSpeed = 0;
+      boss.pos = { x: ROOM_W / 2, y: ROOM_H / 2 };
+      s.graceTimer = 0;
+      s.projectiles.length = 0;
+      return s;
+    };
+
+    it('charges then dashes, and never fires a projectile', () => {
+      const s = ramBoss(1);
+      const boss = s.enemies[0]!;
+      const start = { x: boss.pos.x, y: boss.pos.y };
+      for (let i = 0; i < Math.ceil(RAM_CHARGE_TIME * 60) + 30; i++) tick(s, NO_INPUT, FIXED_DT);
+      expect(s.projectiles).toHaveLength(0);
+      expect(Math.hypot(boss.pos.x - start.x, boss.pos.y - start.y)).toBeGreaterThan(1);
+    });
+
+    it('locks its dash direction toward the player', () => {
+      const s = ramBoss(1);
+      const boss = s.enemies[0]!;
+      s.player.pos = { x: boss.pos.x + 5, y: boss.pos.y }; // player to the right
+      let guard = 0;
+      while (boss.dashSpeed === 0 && guard < 300) {
+        tick(s, NO_INPUT, FIXED_DT);
+        guard++;
+      }
+      expect(boss.dashSpeed).toBeGreaterThan(0);
+      expect(boss.aiDir.x).toBeGreaterThan(0.5); // aimed at the player's side
+    });
+
+    it('decelerates and stays inside the room', () => {
+      const s = ramBoss(1);
+      const boss = s.enemies[0]!;
+      for (let i = 0; i < 600; i++) {
+        tick(s, NO_INPUT, FIXED_DT);
+        expect(boss.pos.x).toBeGreaterThan(0.5);
+        expect(boss.pos.x).toBeLessThan(ROOM_W - 0.5);
+        expect(boss.pos.y).toBeGreaterThan(0.5);
+        expect(boss.pos.y).toBeLessThan(ROOM_H - 0.5);
+      }
+    });
   });
 
   it('the floor boss variant cycles with the floor', () => {

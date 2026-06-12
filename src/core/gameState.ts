@@ -53,7 +53,7 @@ export const PROJECTILE_LIFE = 1.2;
 /** Base projectile damage; item modifiers add on top (see Player.tearDamage). */
 export const PLAYER_TEAR_DAMAGE = 3;
 /** How far a player tear travels before falling, in tiles (base; item-modifiable). */
-export const PLAYER_TEAR_RANGE = 4;
+export const PLAYER_TEAR_RANGE = 5;
 
 /** Mom's Knife tuning. The blade is held in front of the player and extends with charge. */
 export const KNIFE_BASE_REACH = 0.7; // tiles, the held blade's fixed reach (no extend)
@@ -62,6 +62,11 @@ export const KNIFE_CHARGE_TIME = 0.8; // seconds of held fire to reach max
 export const KNIFE_HALF_WIDTH = 0.45; // blade thickness either side of its line
 export const KNIFE_HIT_INTERVAL = 0.2; // seconds between damage pulses (held blade)
 export const KNIFE_THROW_SPEED = 16; // tiles/second a thrown knife flies out and back
+
+/** Orbitals (e.g. the Orbital Fly): small shields circling the player that block shots. */
+export const ORBITAL_RADIUS = 1.0; // distance from the player, in tiles
+export const ORBITAL_SPEED = 3.2; // rotation speed, radians/second
+export const ORBITAL_BLOCK_RADIUS = 0.28; // small hitbox so they aren't too strong
 /** Player shots per second. */
 export const PLAYER_FIRE_RATE = 3;
 /** Player invulnerability window after taking contact damage, in seconds. */
@@ -149,8 +154,15 @@ const SHOOTER_FIRE_RANGE = 8;
 const BOSS_SHOT_SPEED = 6;
 const BOSS_SHOT_DAMAGE = 1;
 const BOSS_SHOT_LIFE = 3;
-/** Number of distinct boss attack-pattern variants. */
-export const BOSS_VARIANTS = 3;
+/** Number of distinct boss variants (0..2 shoot patterns, 3 = the ram). */
+export const BOSS_VARIANTS = 4;
+
+/** Ram boss (variant 3): charges, then dashes in a straight line, bouncing off walls. */
+export const RAM_CHARGE_TIME = 1.2; // seconds of telegraph before the dash
+export const RAM_AIM_LEAD = 0.35; // direction is locked this long before the dash
+const RAM_DASH_SPEED = 16; // initial dash speed, tiles/s
+const RAM_DASH_DECEL = 12; // speed lost per second while dashing
+const RAM_DASH_MIN = 2; // below this the dash ends and a new charge begins
 
 /** Fly: lateral wobble while chasing (Attack Fly). */
 const FLY_WOBBLE_FREQ = 9;
@@ -219,6 +231,10 @@ export interface Player extends Combatant {
   familiars: Familiar[];
   /** Mom's Knife: replaces tears with a held melee blade. */
   knife: boolean;
+  /** Number of orbitals circling the player (each blocks shots a little). */
+  orbitals: number;
+  /** Shared orbital rotation angle (radians), advanced each tick. */
+  orbitalAngle: number;
   /** Knife facing (normalized): the direction the blade points. */
   knifeDir: Vec2;
   /** Knife charge in [0,1]; grows while a fire direction is held, extending reach. */
@@ -421,6 +437,8 @@ export function createGame(seed: number, opts: NewGameOptions = {}): GameState {
     activeItem: null,
     activeCharge: 0,
     familiars: [],
+    orbitals: 0,
+    orbitalAngle: 0,
     knife: false,
     knifeDir: { x: 1, y: 0 },
     knifeCharge: 0,
@@ -706,6 +724,7 @@ export function tick(state: GameState, input: InputState, dt: number): void {
   stepFiring(state, input, dt);
   stepKnife(state, input, dt); // melee blade (replaces tears) when the knife is held
   stepFamiliarsTick(state, dt); // familiars follow the player and shooters fire
+  stepOrbitals(state, dt); // rotate the orbitals before projectiles move
   // Enemies always recoil from hits (knockback), but only chase/attack once grace ends.
   stepEnemies(state, dt, enemiesActive);
   stepProjectiles(state, dt);
@@ -881,6 +900,38 @@ function stepFamiliarsTick(state: GameState, dt: number): void {
   });
 }
 
+/**
+ * World positions of the player's orbitals, evenly spaced around a circle (so 2
+ * sit opposite, 3 at 120°, etc.) and rotating with `orbitalAngle`. Used by both
+ * the projectile-block check and the renderer, so they always agree.
+ */
+export function getOrbitalPositions(player: Player): Vec2[] {
+  const out: Vec2[] = [];
+  const n = player.orbitals;
+  for (let i = 0; i < n; i++) {
+    const a = player.orbitalAngle + (i / n) * Math.PI * 2;
+    out.push({
+      x: player.pos.x + Math.cos(a) * ORBITAL_RADIUS,
+      y: player.pos.y + Math.sin(a) * ORBITAL_RADIUS,
+    });
+  }
+  return out;
+}
+
+/** Advances the orbital rotation; called each tick before projectiles move. */
+function stepOrbitals(state: GameState, dt: number): void {
+  if (state.player.orbitals > 0) state.player.orbitalAngle += ORBITAL_SPEED * dt;
+}
+
+/** True if any orbital intercepts the (enemy) projectile, consuming it. */
+function orbitalBlocks(state: GameState, p: Projectile): boolean {
+  if (state.player.orbitals <= 0) return false;
+  for (const o of getOrbitalPositions(state.player)) {
+    if (circlesOverlap(p.pos, p.radius, o, ORBITAL_BLOCK_RADIUS)) return true;
+  }
+  return false;
+}
+
 /** Shortest distance from point `p` to the segment `a`–`b`. */
 function pointSegmentDist(p: Vec2, a: Vec2, b: Vec2): number {
   const abx = b.x - a.x;
@@ -912,12 +963,15 @@ function stepKnife(state: GameState, input: InputState, dt: number): void {
   const ax = input.aimX ?? 0;
   const ay = input.aimY ?? 0;
   const firing = Math.hypot(ax, ay) > 0;
+  // Range items scale the knife too: reaches grow with the player's tear range.
+  const rangeFactor = player.tearRange / PLAYER_TEAR_RANGE;
 
   // Releasing the fire keys throws the knife — in the direction it was CHARGED
   // (the last aim), regardless of where the player is now heading. Checked before
   // we re-orient to movement, so a same-tick turn can't redirect the throw.
   if (player.knifeFiring && !firing) {
-    const maxDist = KNIFE_BASE_REACH + player.knifeCharge * (KNIFE_MAX_REACH - KNIFE_BASE_REACH);
+    const maxDist =
+      (KNIFE_BASE_REACH + player.knifeCharge * (KNIFE_MAX_REACH - KNIFE_BASE_REACH)) * rangeFactor;
     player.knifeThrow = {
       pos: { x: player.pos.x, y: player.pos.y },
       dir: { x: player.knifeDir.x, y: player.knifeDir.y },
@@ -946,9 +1000,10 @@ function stepKnife(state: GameState, input: InputState, dt: number): void {
     ? Math.min(1, player.knifeCharge + dt / KNIFE_CHARGE_TIME)
     : Math.max(0, player.knifeCharge - dt / KNIFE_CHARGE_TIME);
 
+  const heldReach = KNIFE_BASE_REACH * rangeFactor;
   const tip: Vec2 = {
-    x: player.pos.x + player.knifeDir.x * KNIFE_BASE_REACH,
-    y: player.pos.y + player.knifeDir.y * KNIFE_BASE_REACH,
+    x: player.pos.x + player.knifeDir.x * heldReach,
+    y: player.pos.y + player.knifeDir.y * heldReach,
   };
 
   // Held-blade damage pulses on a cadence (reuse fireCooldown, unused by tears here).
@@ -959,6 +1014,7 @@ function stepKnife(state: GameState, input: InputState, dt: number): void {
     if (enemy.hp <= 0) continue;
     if (pointSegmentDist(enemy.pos, player.pos, tip) <= KNIFE_HALF_WIDTH + enemy.radius) {
       applyDamage(enemy, player.tearDamage);
+      applyStatuses(enemy, player.tearEffects); // burn / slow carry over to the blade
       applyKnockback(enemy, { x: player.knifeDir.x, y: player.knifeDir.y });
       hit = true;
     }
@@ -1001,6 +1057,7 @@ function stepKnifeFlight(state: GameState, dt: number): void {
     if (enemy.hp <= 0 || t.hits.includes(enemy.id)) continue;
     if (Math.hypot(enemy.pos.x - t.pos.x, enemy.pos.y - t.pos.y) <= KNIFE_HALF_WIDTH + enemy.radius) {
       applyDamage(enemy, player.tearDamage);
+      applyStatuses(enemy, player.tearEffects); // burn / slow carry over to the throw
       applyKnockback(enemy, t.dir);
       t.hits.push(enemy.id);
       hit = true;
@@ -1149,12 +1206,39 @@ function stepEnemies(state: GameState, dt: number, active: boolean): void {
         enemy.fireCooldown = ENEMY_FIRE_INTERVAL;
       }
     } else if (enemy.kind === 'boss') {
-      // Advance toward the player; the threat is the bullet patterns. The barrage
-      // variant (2) is more aggressive on its feet.
-      const advance = enemy.bossVariant === 2 ? 0.95 : 0.6;
-      vx = ux * speed * advance;
-      vy = uy * speed * advance;
-      stepBossAttacks(state, enemy, ux, uy, dt);
+      if (enemy.bossVariant === 3) {
+        // Ram boss: charge (telegraph, hold still) → dash in a straight line that
+        // bounces off walls and slows down → recharge. It fires nothing; the body
+        // is the threat.
+        if (enemy.dashSpeed > 0) {
+          // Probe the next step; if a wall blocks an axis, bounce (flip that axis).
+          const sx = enemy.aiDir.x * enemy.dashSpeed * dt;
+          const sy = enemy.aiDir.y * enemy.dashSpeed * dt;
+          const probe = moveBody(grid, enemy.pos, enemy.radius, sx, sy);
+          if (Math.abs(probe.x - enemy.pos.x) < Math.abs(sx) - 1e-4) enemy.aiDir.x = -enemy.aiDir.x;
+          if (Math.abs(probe.y - enemy.pos.y) < Math.abs(sy) - 1e-4) enemy.aiDir.y = -enemy.aiDir.y;
+          enemy.dashSpeed = Math.max(0, enemy.dashSpeed - RAM_DASH_DECEL * dt);
+          if (enemy.dashSpeed <= RAM_DASH_MIN) {
+            enemy.dashSpeed = 0; // spent → start charging again
+            enemy.aiTimer = 0;
+          }
+          vx = enemy.aiDir.x * enemy.dashSpeed;
+          vy = enemy.aiDir.y * enemy.dashSpeed;
+        } else {
+          // Charging: stand still and aim at the player until the lock point, then
+          // freeze the direction so the player can still dodge at the last moment.
+          enemy.aiTimer += dt;
+          if (enemy.aiTimer < RAM_CHARGE_TIME - RAM_AIM_LEAD) enemy.aiDir = { x: ux, y: uy };
+          if (enemy.aiTimer >= RAM_CHARGE_TIME) enemy.dashSpeed = RAM_DASH_SPEED;
+        }
+      } else {
+        // Advance toward the player; the threat is the bullet patterns. The barrage
+        // variant (2) is more aggressive on its feet.
+        const advance = enemy.bossVariant === 2 ? 0.95 : 0.6;
+        vx = ux * speed * advance;
+        vy = uy * speed * advance;
+        stepBossAttacks(state, enemy, ux, uy, dt);
+      }
     } else if (enemy.kind === 'fly') {
       // Buzz toward the player with a perpendicular wobble (erratic flight).
       enemy.aiTimer += dt;
@@ -1313,7 +1397,9 @@ function stepProjectiles(state: GameState, dt: number): void {
       }
       if (consumed) continue; // non-piercing tear is spent on its first hit
     } else {
-      // Enemy projectile: hit the player (negated but still consumed during i-frames).
+      // Enemy projectile: orbitals block it first (small hitbox = only a little).
+      if (orbitalBlocks(state, p)) continue;
+      // ...then it can hit the player (negated but still consumed during i-frames).
       const player = state.player;
       if (circlesOverlap(p.pos, p.radius, player.pos, player.radius)) {
         if (player.invuln <= 0) {

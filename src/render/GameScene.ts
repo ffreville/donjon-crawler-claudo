@@ -1,13 +1,20 @@
 import Phaser from 'phaser';
 import {
+  ACHIEVEMENTS,
   createGame,
   DEFAULT_CHARACTER_ID,
   FIXED_DT,
+  floorClearedAchievements,
+  gameWonAchievements,
   getItem,
+  getOrbitalPositions,
   doorWorldPos,
   isDoorLocked,
   isWall,
   KNIFE_BASE_REACH,
+  PLAYER_TEAR_RANGE,
+  RAM_AIM_LEAD,
+  RAM_CHARGE_TIME,
   ROOM_W,
   TELEPORTER_POS,
   TELEPORTER_RADIUS,
@@ -17,9 +24,37 @@ import {
   type InputState,
   type RoomType,
 } from '../core/index.js';
-import { playCoin, playKey, playShoot } from './audio.js';
-import { playMusicFromStart, stopMusic } from './music.js';
-import { createButton, getMusicOn, getShowStats, getSoundOn, PALETTE } from './ui.js';
+import { unlockAchievement } from './achievementStore.js';
+import {
+  playAchievement,
+  playBossDash,
+  playCoin,
+  playDoor,
+  playEnemyDeath,
+  playGameOver,
+  playHeart,
+  playHurt,
+  playKey,
+  playKnife,
+  playPickup,
+  playShoot,
+  playUnlock,
+  playUseItem,
+  playWin,
+  setSfxVolume,
+  stopEnemyAmbience,
+  updateEnemyAmbience,
+} from './audio.js';
+import { playMusicFromStart, setMusicVolume, stopMusic } from './music.js';
+import {
+  createButton,
+  getMusicOn,
+  getMusicVolume,
+  getSfxVolume,
+  getShowStats,
+  getSoundOn,
+  PALETTE,
+} from './ui.js';
 import {
   FLOOR_VARIANTS,
   floorTileKey,
@@ -52,7 +87,7 @@ const FAMILIAR_LOOK: Record<string, { tex: string; w: number; h: number; tint?: 
 };
 
 /** Boss tint per attack-pattern variant (boss texture is near-white). */
-const BOSS_VARIANT_COLORS = [0xd6409f, 0x9b59ff, 0xff5d5d];
+const BOSS_VARIANT_COLORS = [0xd6409f, 0x9b59ff, 0xff5d5d, 0xff8c1a];
 
 /** Door sprite angle per wall side (texture is drawn pointing up). */
 const DOOR_ANGLE: Record<Direction, number> = { up: 0, right: 90, down: 180, left: 270 };
@@ -112,6 +147,8 @@ export class GameScene extends Phaser.Scene {
   private seed = 2026;
   /** Selected playable character (from the select screen); carried across replays. */
   private characterId = DEFAULT_CHARACTER_ID;
+  /** Seeded run (player typed a seed): achievements are disabled for it. */
+  private seeded = false;
 
   /** Currently held physical key codes. */
   private readonly held = new Set<string>();
@@ -125,6 +162,8 @@ export class GameScene extends Phaser.Scene {
   private teleporter?: Phaser.GameObjects.Image;
   private bossBarBg?: Phaser.GameObjects.Rectangle;
   private bossBarFill?: Phaser.GameObjects.Rectangle;
+  /** Telegraph line showing where a charging ram boss will dash. */
+  private bossChargeLine?: Phaser.GameObjects.Rectangle;
   /** Last-seen HP per enemy id, to detect hits for damage numbers / flashes. */
   private enemyHp = new Map<number, number>();
   /** Per-enemy white-flash deadline (ms timestamps), set on hit. */
@@ -145,17 +184,36 @@ export class GameScene extends Phaser.Scene {
   /** Last seen coin / key totals; a rise cues the pickup sound. */
   private prevCoins = 0;
   private prevKeys = 0;
+  /** Previous-frame snapshots for one-shot SFX edge detection. */
+  private prevEnemyIds = new Set<number>();
+  private prevRoomSfx = -1;
+  private prevActiveCharge = 0;
+  private prevKnifeThrowing = false;
+  private prevRamDashing = false;
+  private prevStatus = 'playing';
   /** One sprite per owned familiar; they ease toward a spot beside the player. */
   private familiarSprites: Phaser.GameObjects.Image[] = [];
+  /** One sprite per orbital (Orbital Fly) circling the player. */
+  private orbitalSprites: Phaser.GameObjects.Image[] = [];
   /** The Mom's Knife blade (a rotated bar), shown only when the knife is held. */
   private knifeSprite?: Phaser.GameObjects.Rectangle;
+  /** Achievement-unlock detection + toast popup state. */
+  private prevBossDefeated = false;
+  private prevWon = false;
+  private achToastQueue: string[] = [];
+  private achToast?: Phaser.GameObjects.Text;
+  private achToastBusy = false;
 
   constructor() {
     super('GameScene');
   }
 
-  init(data: { characterId?: string }): void {
+  init(data: { characterId?: string; seed?: number; seeded?: boolean }): void {
     if (data?.characterId) this.characterId = data.characterId;
+    // A fresh run gets a random seed (chosen by the launcher), so dungeons and the
+    // item bag vary. Replays then increment from it. The core stays deterministic.
+    if (typeof data?.seed === 'number') this.seed = data.seed;
+    this.seeded = data?.seeded === true; // seeded runs don't unlock achievements
   }
 
   create(): void {
@@ -240,9 +298,14 @@ export class GameScene extends Phaser.Scene {
 
     this.bindInput();
 
-    // Background music: loop from the start of the run; stop when leaving to menu.
+    // Apply the saved volumes, then loop the music from the start of the run.
+    setSfxVolume(getSfxVolume(this));
+    setMusicVolume(getMusicVolume(this));
     playMusicFromStart(getMusicOn(this));
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => stopMusic());
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      stopMusic();
+      stopEnemyAmbience();
+    });
   }
 
   /** Start a fresh run with the current seed and reset all view caches. */
@@ -258,6 +321,12 @@ export class GameScene extends Phaser.Scene {
     this.prevShotsFired = this.state.player.shotsFired;
     this.prevCoins = this.state.player.coins;
     this.prevKeys = this.state.player.keys;
+    this.prevEnemyIds = new Set();
+    this.prevRoomSfx = -1;
+    this.prevActiveCharge = this.state.player.activeCharge;
+    this.prevKnifeThrowing = false;
+    this.prevRamDashing = false;
+    this.prevStatus = 'playing';
     this.hudKey = '';
     this.hudGroup?.clear(true, true);
     this.bannerTween?.remove();
@@ -277,8 +346,16 @@ export class GameScene extends Phaser.Scene {
     this.projectileSprites.clear();
     for (const s of this.familiarSprites) s.destroy();
     this.familiarSprites = [];
+    for (const s of this.orbitalSprites) s.destroy();
+    this.orbitalSprites = [];
     this.knifeSprite?.destroy();
     this.knifeSprite = undefined;
+    this.prevBossDefeated = false;
+    this.prevWon = false;
+    this.achToastQueue = [];
+    this.achToastBusy = false;
+    this.achToast?.destroy();
+    this.achToast = undefined;
     for (const s of this.pickupSprites.values()) s.destroy();
     this.pickupSprites.clear();
     for (const s of this.pedestals.values()) s.destroy();
@@ -291,6 +368,8 @@ export class GameScene extends Phaser.Scene {
     this.bossBarBg = undefined;
     this.bossBarFill?.destroy();
     this.bossBarFill = undefined;
+    this.bossChargeLine?.destroy();
+    this.bossChargeLine = undefined;
     this.tiles.clear(true, true);
   }
 
@@ -354,13 +433,18 @@ export class GameScene extends Phaser.Scene {
       this.scene.pause();
       this.scene.launch('OptionsScene', { returnTo: 'GameScene' });
       // GameScene is last in the scene list, so it renders over a launched
-      // overlay — bring Options to the front so it's actually visible/clickable.
+      // overlay — bring it to the front so it's actually visible/clickable.
       this.scene.bringToTop('OptionsScene');
     }).setDepth(201);
-    const menu = createButton(this, width / 2, height * 0.48 + 128, 'Menu principal', () =>
+    const achievements = createButton(this, width / 2, height * 0.48 + 128, 'Succès', () => {
+      this.scene.pause();
+      this.scene.launch('AchievementsScene', { returnTo: 'GameScene' });
+      this.scene.bringToTop('AchievementsScene');
+    }).setDepth(201);
+    const menu = createButton(this, width / 2, height * 0.48 + 192, 'Menu principal', () =>
       this.scene.start('MenuScene'),
     ).setDepth(201);
-    this.pauseMenu.addMultiple([dim, title, resume, options, menu]);
+    this.pauseMenu.addMultiple([dim, title, resume, options, achievements, menu]);
   }
 
   private replay(): void {
@@ -411,6 +495,15 @@ export class GameScene extends Phaser.Scene {
     // landing on a frame that runs no tick isn't dropped.
     if (steps > 0) this.useQueued = false;
 
+    // Enemy ambience: a buzz that tracks fly count, periodic groans for melee foes.
+    let flies = 0;
+    let melee = 0;
+    for (const e of this.state.enemies) {
+      if (e.kind === 'fly') flies++;
+      else if (e.kind !== 'shooter' && e.kind !== 'boss') melee++;
+    }
+    updateEnemyAmbience(flies, melee, deltaMs, getSoundOn(this));
+
     this.render();
   }
 
@@ -437,6 +530,8 @@ export class GameScene extends Phaser.Scene {
 
   private render(): void {
     const { player, currentRoom, doorsOpen } = this.state;
+
+    this.checkAchievements();
 
     // The grid changes when the room changes, its doors open, or a locked door
     // gets opened with a key — redraw then.
@@ -469,22 +564,29 @@ export class GameScene extends Phaser.Scene {
           .setDisplaySize(TILE * 0.9, 7)
           .setFillStyle(0xfff2a0);
       } else {
-        // Held blade: fixed length (no extend while charging); colour cues charge.
+        // Held blade: fixed length (no extend while charging), scaled by range items.
+        const heldReach = KNIFE_BASE_REACH * (player.tearRange / PLAYER_TEAR_RANGE);
         this.knifeSprite
           .setPosition(player.pos.x * TILE, player.pos.y * TILE - lift)
           .setRotation(Math.atan2(player.knifeDir.y, player.knifeDir.x))
-          .setDisplaySize(KNIFE_BASE_REACH * TILE, 6)
+          .setDisplaySize(heldReach * TILE, 6)
           .setFillStyle(player.knifeCharge > 0.98 ? 0xfff2a0 : 0xd8dde6);
       }
     } else if (this.knifeSprite) {
       this.knifeSprite.setVisible(false);
     }
 
-    // Player-hit feedback: screen shake + red flash when HP drops.
+    const sfx = getSoundOn(this);
+
+    // Player-hit feedback: screen shake + red flash + hurt sound when HP drops;
+    // a soft heart cue when HP rises (heal).
     if (player.hp < this.prevPlayerHp) {
       this.cameras.main.shake(120, 0.008);
       this.hurtFlash.setAlpha(0.35);
       this.tweens.add({ targets: this.hurtFlash, alpha: 0, duration: 250 });
+      if (sfx) playHurt();
+    } else if (player.hp > this.prevPlayerHp && sfx) {
+      playHeart();
     }
     this.prevPlayerHp = player.hp;
 
@@ -493,25 +595,30 @@ export class GameScene extends Phaser.Scene {
       const lastId = player.items[player.items.length - 1];
       const item = lastId !== undefined ? getItem(lastId) : undefined;
       if (item) this.showItemBanner(item.name, item.description);
+      if (sfx) playPickup();
     }
     this.prevItemCount = player.items.length;
 
     // Tear sound: one cue per trigger pull (the core counts shots, not pellets).
-    if (player.shotsFired > this.prevShotsFired && getSoundOn(this)) playShoot();
+    if (player.shotsFired > this.prevShotsFired && sfx) playShoot();
     this.prevShotsFired = player.shotsFired;
 
-    // Pickup cues: play when the coin / key total rises (never on spend/use).
-    if (getSoundOn(this)) {
+    if (sfx) {
       if (player.coins > this.prevCoins) playCoin();
       if (player.keys > this.prevKeys) playKey();
+      if (player.keys < this.prevKeys) playUnlock(); // spent a key on a locked door
     }
     this.prevCoins = player.coins;
     this.prevKeys = player.keys;
 
+    if (sfx) this.playEventSounds();
+
     this.syncEnemies();
+    this.updateBossTelegraph();
     this.syncProjectiles();
     this.syncPickups();
     this.syncFamiliars();
+    this.syncOrbitals();
     this.syncTeleporter();
     this.syncBossBar();
     this.updateItemTooltip();
@@ -690,6 +797,13 @@ export class GameScene extends Phaser.Scene {
       const shadow = this.enemyShadows.get(e.id);
       shadow?.setPosition(e.pos.x * TILE, e.pos.y * TILE + e.radius * TILE * 0.85);
 
+      // Ram boss: pulse bigger while charging its dash (visual tell).
+      if (e.kind === 'boss' && e.bossVariant === 3) {
+        const base = e.radius * 2 * TILE * 1.25;
+        const pulse = e.dashSpeed === 0 ? 1 + 0.14 * Math.sin(now / 55) : 1;
+        sprite.setDisplaySize(base * pulse, base * pulse);
+      }
+
       // Hit feedback: a chunk of damage (>=1) spawns a floating number + white flash.
       const prev = this.enemyHp.get(e.id);
       if (prev !== undefined && e.hp < prev) {
@@ -705,7 +819,13 @@ export class GameScene extends Phaser.Scene {
       const flashing = (this.enemyFlashUntil.get(e.id) ?? 0) > now;
       const burning = e.effects.some((fx) => fx.kind === 'burn');
       const slowed = e.effects.some((fx) => fx.kind === 'slow');
+      const ramLocked =
+        e.kind === 'boss' &&
+        e.bossVariant === 3 &&
+        e.dashSpeed === 0 &&
+        e.aiTimer >= RAM_CHARGE_TIME - RAM_AIM_LEAD;
       if (flashing) sprite.setTintFill(0xffffff);
+      else if (ramLocked) sprite.setTint(Math.floor(now / 80) % 2 === 0 ? 0xffffff : 0xff3030);
       else if (burning) sprite.setTint(0xffa14d);
       else if (slowed) sprite.setTint(0x8fd0ff);
       else if (e.kind === 'boss') sprite.setTint(BOSS_VARIANT_COLORS[e.bossVariant] ?? 0xd6409f);
@@ -925,6 +1045,150 @@ export class GameScene extends Phaser.Scene {
     fams.forEach((fam, i) => {
       const sprite = this.familiarSprites[i]!;
       sprite.setPosition(fam.pos.x * TILE, fam.pos.y * TILE + Math.sin(t * 3 + i) * 3);
+    });
+  }
+
+  /** Watches for floor-clear / win edges and unlocks the matching achievements. */
+  private checkAchievements(): void {
+    if (this.seeded) return; // seeded runs never unlock achievements
+    const st = this.state;
+    if (st.bossDefeated && !this.prevBossDefeated) {
+      for (const id of floorClearedAchievements(st.floor, this.characterId)) {
+        if (unlockAchievement(id)) this.queueAchievement(id);
+      }
+    }
+    this.prevBossDefeated = st.bossDefeated;
+
+    const won = st.status === 'won';
+    if (won && !this.prevWon) {
+      for (const id of gameWonAchievements(this.characterId)) {
+        if (unlockAchievement(id)) this.queueAchievement(id);
+      }
+    }
+    this.prevWon = won;
+  }
+
+  /** Enqueues an achievement toast and starts the display loop if idle. */
+  private queueAchievement(id: string): void {
+    this.achToastQueue.push(id);
+    if (getSoundOn(this)) playAchievement();
+    this.showNextToast();
+  }
+
+  private showNextToast(): void {
+    if (this.achToastBusy) return;
+    const id = this.achToastQueue.shift();
+    if (id === undefined) return;
+    const a = ACHIEVEMENTS.find((x) => x.id === id);
+    if (!a) {
+      this.showNextToast();
+      return;
+    }
+    this.achToastBusy = true;
+    if (!this.achToast) {
+      this.achToast = this.add
+        .text(this.scale.width - 12, this.scale.height - 12, '', {
+          fontFamily: 'monospace',
+          fontSize: '14px',
+          color: '#ffe9a8',
+          backgroundColor: '#1a1430dd',
+          align: 'right',
+          padding: { x: 12, y: 8 },
+        })
+        .setOrigin(1, 1) // anchored to the bottom-right corner
+        .setDepth(160);
+    }
+    this.achToast.setText(`SUCCÈS DÉBLOQUÉ\n${a.name}`).setAlpha(0).setVisible(true);
+    this.tweens.add({
+      targets: this.achToast,
+      alpha: 1,
+      duration: 220,
+      yoyo: true,
+      hold: 1800,
+      onComplete: () => {
+        this.achToast?.setVisible(false);
+        this.achToastBusy = false;
+        this.showNextToast();
+      },
+    });
+  }
+
+  /** Shows the ram boss's dash line once its direction is locked, just before it fires off. */
+  private updateBossTelegraph(): void {
+    const ram = this.state.enemies.find(
+      (e) =>
+        e.kind === 'boss' &&
+        e.bossVariant === 3 &&
+        e.dashSpeed === 0 &&
+        e.aiTimer >= RAM_CHARGE_TIME - RAM_AIM_LEAD,
+    );
+    if (!ram) {
+      this.bossChargeLine?.setVisible(false);
+      return;
+    }
+    if (!this.bossChargeLine) {
+      this.bossChargeLine = this.add.rectangle(0, 0, 1, 4, 0xff3030, 0.65).setOrigin(0, 0.5).setDepth(3);
+    }
+    this.bossChargeLine
+      .setVisible(true)
+      .setPosition(ram.pos.x * TILE, ram.pos.y * TILE)
+      .setRotation(Math.atan2(ram.aiDir.y, ram.aiDir.x))
+      .setDisplaySize(7 * TILE, 5);
+  }
+
+  /** Edge-detected one-shot SFX (door, knife throw, active use, boss dash, deaths, end). */
+  private playEventSounds(): void {
+    const s = this.state;
+    const p = s.player;
+
+    const roomChanged = s.currentRoom !== this.prevRoomSfx;
+    if (roomChanged && this.prevRoomSfx !== -1) playDoor();
+
+    // Enemy death: an id present last frame is gone now (and we didn't change room).
+    const curIds = new Set<number>();
+    for (const e of s.enemies) curIds.add(e.id);
+    if (!roomChanged) {
+      for (const id of this.prevEnemyIds) {
+        if (!curIds.has(id)) {
+          playEnemyDeath();
+          break; // one cue per frame even if several died
+        }
+      }
+    }
+    this.prevEnemyIds = curIds;
+    this.prevRoomSfx = s.currentRoom;
+
+    if (p.activeCharge < this.prevActiveCharge) playUseItem(); // charge only drops on use
+    this.prevActiveCharge = p.activeCharge;
+
+    const throwing = p.knifeThrow !== null;
+    if (throwing && !this.prevKnifeThrowing) playKnife();
+    this.prevKnifeThrowing = throwing;
+
+    const ramDashing = s.enemies.some(
+      (e) => e.kind === 'boss' && e.bossVariant === 3 && e.dashSpeed > 0,
+    );
+    if (ramDashing && !this.prevRamDashing) playBossDash();
+    this.prevRamDashing = ramDashing;
+
+    if (s.status !== this.prevStatus) {
+      if (s.status === 'won') playWin();
+      else if (s.status === 'dead') playGameOver();
+      this.prevStatus = s.status;
+    }
+  }
+
+  /** Draws the orbiting flies at the positions the core computes. */
+  private syncOrbitals(): void {
+    const positions = getOrbitalPositions(this.state.player);
+    while (this.orbitalSprites.length < positions.length) {
+      const img = this.add.image(0, 0, 'enemy-fly').setDepth(11);
+      img.setDisplaySize(TILE * 0.5, TILE * 0.45).setTint(0xbfe8a0); // pale-green orbiting fly
+      this.orbitalSprites.push(img);
+    }
+    while (this.orbitalSprites.length > positions.length) this.orbitalSprites.pop()?.destroy();
+    positions.forEach((p, i) => {
+      this.orbitalSprites[i]!.setPosition(p.x * TILE, p.y * TILE);
     });
   }
 

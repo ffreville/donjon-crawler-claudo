@@ -4,6 +4,8 @@ import { GameScene, PANEL_W, TILE } from './GameScene.js';
 import { MenuScene } from './MenuScene.js';
 import { OptionsScene } from './OptionsScene.js';
 import { CharacterSelectScene } from './CharacterSelectScene.js';
+import { AchievementsScene } from './AchievementsScene.js';
+import { SeedScene } from './SeedScene.js';
 
 const config: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
@@ -18,7 +20,7 @@ const config: Phaser.Types.Core.GameConfig = {
     autoCenter: Phaser.Scale.CENTER_BOTH,
   },
   // First scene boots automatically: Menu -> (Game | Options).
-  scene: [MenuScene, OptionsScene, CharacterSelectScene, GameScene],
+  scene: [MenuScene, OptionsScene, CharacterSelectScene, AchievementsScene, SeedScene, GameScene],
 };
 
 export const game = new Phaser.Game(config);

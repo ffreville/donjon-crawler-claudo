@@ -9,6 +9,7 @@ import {
   type Character,
 } from '../core/index.js';
 import { generateTextures } from './textures.js';
+import { hasBeatenGame } from './achievementStore.js';
 import { PALETTE } from './ui.js';
 
 /** Base stats shown when a character doesn't override them. */
@@ -25,8 +26,17 @@ const num = (n: number): string => (Number.isInteger(n) ? `${n}` : n.toFixed(1))
 
 /** Character picker shown before a run. Each card starts the game as that hero. */
 export class CharacterSelectScene extends Phaser.Scene {
+  /** When set (seeded launch), this exact seed is used and achievements are off. */
+  private fixedSeed?: number;
+  private seeded = false;
+
   constructor() {
     super('CharacterSelectScene');
+  }
+
+  init(data: { seed?: number; seeded?: boolean }): void {
+    this.fixedSeed = typeof data?.seed === 'number' ? data.seed : undefined;
+    this.seeded = data?.seeded === true;
   }
 
   create(): void {
@@ -43,6 +53,15 @@ export class CharacterSelectScene extends Phaser.Scene {
         fontStyle: 'bold',
       })
       .setOrigin(0.5);
+    if (this.seeded) {
+      this.add
+        .text(width / 2, height * 0.115, `Seed ${this.fixedSeed} — succès désactivés`, {
+          fontFamily: 'monospace',
+          fontSize: '13px',
+          color: PALETTE.dim,
+        })
+        .setOrigin(0.5);
+    }
 
     // Grid layout (4 columns), so 8 cards aren't cramped into one thin row.
     const n = CHARACTERS.length;
@@ -138,8 +157,32 @@ export class CharacterSelectScene extends Phaser.Scene {
       })
       .setOrigin(0, 0);
 
+    // Win-gated characters (the Tinker) stay locked until the game is beaten once.
+    if (c.lockedUntilWin && !hasBeatenGame()) {
+      box.disableInteractive();
+      sprite.setAlpha(0.25);
+      this.add
+        .rectangle(x, y, w, h, 0x000000, 0.55)
+        .setOrigin(0)
+        .setDepth(1);
+      this.add
+        .text(x + w / 2, y + h / 2, '🔒\nTerminez le jeu\npour débloquer', {
+          fontFamily: 'monospace',
+          fontSize: '13px',
+          color: '#cfd6e0',
+          align: 'center',
+          lineSpacing: 4,
+        })
+        .setOrigin(0.5)
+        .setDepth(2);
+      return;
+    }
+
     const start = (): void => {
-      this.scene.start('GameScene', { characterId: c.id });
+      // Seeded launch uses the typed seed (achievements off); otherwise a fresh
+      // random seed per new game so the run (and its items) actually varies.
+      const seed = this.fixedSeed ?? Math.floor(Math.random() * 0xffffffff);
+      this.scene.start('GameScene', { characterId: c.id, seed, seeded: this.seeded });
     };
     box.on('pointerover', () => box.setStrokeStyle(2, 0xffd166));
     box.on('pointerout', () => box.setStrokeStyle(2, 0x2a3145));

@@ -1,17 +1,19 @@
 import Phaser from 'phaser';
-import { setMusicEnabled } from './music.js';
+import { setMusicVolume } from './music.js';
+import { setSfxVolume } from './audio.js';
 import {
   createButton,
-  getMusicOn,
+  getMusicVolume,
+  getSfxVolume,
   getShowStats,
-  getSoundOn,
+  makeSlider,
   PALETTE,
-  setMusicOn,
+  setMusicVolumeSetting,
   setShowStats,
-  setSoundOn,
+  setSfxVolumeSetting,
 } from './ui.js';
 
-/** Options menu: toggle the right-side stats panel. */
+/** Options menu: stats panel toggle + music / SFX volume sliders. */
 export class OptionsScene extends Phaser.Scene {
   /** Where 'Retour' goes: 'MenuScene' (from main menu) or 'GameScene' (from pause). */
   private returnTo = 'MenuScene';
@@ -39,7 +41,7 @@ export class OptionsScene extends Phaser.Scene {
     this.add.rectangle(0, 0, width, height, PALETTE.bg).setOrigin(0);
 
     this.add
-      .text(width / 2, height * 0.26, 'OPTIONS', {
+      .text(width / 2, height * 0.2, 'OPTIONS', {
         fontFamily: 'monospace',
         fontSize: '34px',
         color: PALETTE.accent,
@@ -48,26 +50,40 @@ export class OptionsScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     const statsLabel = (): string => `Stats a droite : ${getShowStats(this) ? 'ON' : 'OFF'}`;
-    const statsToggle = createButton(this, width / 2, height * 0.4, statsLabel(), () => {
+    const statsToggle = createButton(this, width / 2, height * 0.38, statsLabel(), () => {
       setShowStats(this, !getShowStats(this));
       statsToggle.setText(statsLabel());
     });
 
-    const sfxLabel = (): string => `Bruitages : ${getSoundOn(this) ? 'ON' : 'OFF'}`;
-    const sfxToggle = createButton(this, width / 2, height * 0.4 + 60, sfxLabel(), () => {
-      setSoundOn(this, !getSoundOn(this));
-      sfxToggle.setText(sfxLabel());
+    // Volume sliders. The slider sits left of center; its label of the row above it.
+    const sliderX = width / 2 - 130;
+    const sliderW = 220;
+
+    this.add
+      .text(sliderX, height * 0.52 - 22, 'Musique', {
+        fontFamily: 'monospace',
+        fontSize: '15px',
+        color: PALETTE.text,
+      })
+      .setOrigin(0, 0.5);
+    makeSlider(this, sliderX, height * 0.52, sliderW, getMusicVolume(this), (v) => {
+      setMusicVolumeSetting(this, v);
+      setMusicVolume(v); // apply live
     });
 
-    const musicLabel = (): string => `Musique : ${getMusicOn(this) ? 'ON' : 'OFF'}`;
-    const musicToggle = createButton(this, width / 2, height * 0.4 + 120, musicLabel(), () => {
-      const on = !getMusicOn(this);
-      setMusicOn(this, on);
-      setMusicEnabled(on); // apply live
-      musicToggle.setText(musicLabel());
+    this.add
+      .text(sliderX, height * 0.64 - 22, 'Bruitages', {
+        fontFamily: 'monospace',
+        fontSize: '15px',
+        color: PALETTE.text,
+      })
+      .setOrigin(0, 0.5);
+    makeSlider(this, sliderX, height * 0.64, sliderW, getSfxVolume(this), (v) => {
+      setSfxVolumeSetting(this, v);
+      setSfxVolume(v); // apply live
     });
 
-    createButton(this, width / 2, height * 0.4 + 196, 'Retour', () => this.goBack());
+    createButton(this, width / 2, height * 0.82, 'Retour', () => this.goBack());
     this.input.keyboard?.on('keydown-ESC', () => this.goBack());
   }
 }

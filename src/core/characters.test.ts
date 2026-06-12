@@ -15,7 +15,7 @@ describe('characters', () => {
     const wanderer = createGame(1, { characterId: 'wanderer' }).player;
     expect(base.maxHp).toBe(6);
     expect(base.tearDamage).toBe(3);
-    expect(base.tearRange).toBe(4);
+    expect(base.tearRange).toBe(5); // base range now bakes in the +1
     expect(base.items).toHaveLength(0);
     expect(base.activeItem).toBeNull();
     expect(base.familiars).toHaveLength(0);
@@ -28,20 +28,13 @@ describe('characters', () => {
     expect(p.tearDamage).toBe(3);
   });
 
-  it('every character starts with a Spyglass (+1 range)', () => {
-    for (const c of CHARACTERS) {
-      const p = createGame(1, { characterId: c.id }).player;
-      expect(p.items).toContain('spyglass');
-    }
-  });
-
-  it('the Brute applies its absolute stat overrides (+1 range from the Spyglass)', () => {
+  it('the Brute applies its absolute stat overrides', () => {
     const p = createGame(1, { characterId: 'brute' }).player;
     expect(p.maxHp).toBe(8);
     expect(p.hp).toBe(8); // full at start
     expect(p.tearDamage).toBe(5);
     expect(p.speed).toBe(5);
-    expect(p.tearRange).toBe(4); // 3 base + 1 Spyglass
+    expect(p.tearRange).toBe(4);
     expect(p.knife).toBe(true); // TEMP: knife for testing, remove before v1
   });
 
@@ -49,7 +42,7 @@ describe('characters', () => {
     const p = createGame(1, { characterId: 'scout' }).player;
     expect(p.maxHp).toBe(4);
     expect(p.speed).toBe(7.5);
-    expect(p.tearRange).toBe(8); // 7 base + 1 Spyglass
+    expect(p.tearRange).toBe(8);
     expect(p.tearDamage).toBe(2);
   });
 

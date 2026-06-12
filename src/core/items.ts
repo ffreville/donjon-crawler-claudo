@@ -111,6 +111,8 @@ export interface Item {
   familiar?: FamiliarSpec;
   /** If true, replaces tears with the Knife: a held melee blade you charge to extend. */
   knife?: boolean;
+  /** If true, grants one orbital (circles the player and blocks shots a little). */
+  orbital?: boolean;
 }
 
 /** The player fields an item can mutate. `Player` is structurally compatible. */
@@ -128,6 +130,7 @@ export interface MutableStats {
   homing: boolean;
   flying: boolean;
   knife: boolean;
+  orbitals: number;
   familiars: Familiar[];
 }
 
@@ -328,6 +331,29 @@ export const ITEMS: Record<string, Item> = {
     modifiers: {},
     knife: true,
   },
+  // Orbital Fly — found in three copies, so a run can stack up to three flies.
+  // They auto-space around the player (2 opposite, 3 at 120°).
+  'orbital-fly-1': {
+    id: 'orbital-fly-1',
+    name: 'Orbital Fly',
+    description: 'A fly that orbits you and blocks the occasional enemy shot.',
+    modifiers: {},
+    orbital: true,
+  },
+  'orbital-fly-2': {
+    id: 'orbital-fly-2',
+    name: 'Orbital Fly',
+    description: 'A fly that orbits you and blocks the occasional enemy shot.',
+    modifiers: {},
+    orbital: true,
+  },
+  'orbital-fly-3': {
+    id: 'orbital-fly-3',
+    name: 'Orbital Fly',
+    description: 'A fly that orbits you and blocks the occasional enemy shot.',
+    modifiers: {},
+    orbital: true,
+  },
 };
 
 /** Pool of item ids that can drop, in a stable order (for deterministic picking). */
@@ -357,6 +383,7 @@ export function applyItem(player: MutableStats, item: Item): void {
   }
   if (item.flying) player.flying = true;
   if (item.knife) player.knife = true;
+  if (item.orbital) player.orbitals += 1;
   if (item.familiar) {
     const f = item.familiar;
     player.familiars.push({

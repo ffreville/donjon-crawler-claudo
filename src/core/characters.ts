@@ -30,6 +30,8 @@ export interface Character {
   /** Starting coins / keys. */
   coins?: number;
   keys?: number;
+  /** If true, this character is locked until the game has been beaten once. */
+  lockedUntilWin?: boolean;
 }
 
 export const CHARACTERS: readonly Character[] = [
@@ -37,39 +39,37 @@ export const CHARACTERS: readonly Character[] = [
     id: 'wanderer',
     name: 'The Wanderer',
     blurb: 'A balanced, no-frills start. Good to learn the ropes.',
-    // Every character starts with a Spyglass (+1 range).
-    items: ['spyglass'],
+    // No overrides, no gear: the baseline.
   },
   {
     id: 'brute',
     name: 'The Brute',
     blurb: 'Tough and hard-hitting. Now wields the Knife (testing).',
-    stats: { maxHp: 8, tearDamage: 5, speed: 5, tearRange: 3 },
+    stats: { maxHp: 8, tearDamage: 5, speed: 5, tearRange: 4 },
     // TEMP: the Knife is here only to test it from character select. Remove before v1.
-    items: ['spyglass', 'knife'],
+    items: ['knife'],
   },
   {
     id: 'scout',
     name: 'The Scout',
     blurb: 'Fast and far-reaching, but fragile and light-hitting.',
-    stats: { maxHp: 4, speed: 7.5, tearRange: 7, tearDamage: 2 },
-    items: ['spyglass'],
+    stats: { maxHp: 4, speed: 7.5, tearRange: 8, tearDamage: 2 },
   },
   {
     id: 'tinker',
     name: 'The Tinker',
-    blurb: 'Quicker trigger, and starts holding a Reroll Die.',
+    blurb: 'Quicker trigger, and starts holding a Reroll Die. Unlocked by beating the game.',
     stats: { maxHp: 5, fireRate: 4 },
-    items: ['spyglass'],
     activeItem: 'reroll-die',
     coins: 3,
+    lockedUntilWin: true,
   },
   {
     id: 'hoarder',
     name: 'The Hoarder',
     blurb: 'Starts with a Flying Key familiar, some coins and a key.',
     stats: { maxHp: 5 },
-    items: ['flying-key', 'spyglass'],
+    items: ['flying-key'],
     coins: 4,
     keys: 1,
   },
@@ -78,21 +78,20 @@ export const CHARACTERS: readonly Character[] = [
     name: 'The Twins',
     blurb: 'Fires two tears at once, but each one hits lighter.',
     stats: { maxHp: 5, shotCount: 2, tearDamage: 2 },
-    items: ['spyglass'],
   },
   {
     id: 'ember',
     name: 'The Pyromancer',
     blurb: 'Tears set foes ablaze — but their direct hit is weak.',
     stats: { maxHp: 5, tearDamage: 2 },
-    items: ['fire-tears', 'spyglass'],
+    items: ['fire-tears'],
   },
   {
     id: 'wraith',
     name: 'The Wraith',
     blurb: 'Floats over every floor trap, but is frail.',
     stats: { maxHp: 4, speed: 6.5 },
-    items: ['wings', 'spyglass'],
+    items: ['wings'],
   },
 ] as const;
 

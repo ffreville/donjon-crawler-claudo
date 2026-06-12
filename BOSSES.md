@@ -65,6 +65,16 @@ sur un cercle, `aimed(n, spread)` = `n` projectiles en éventail vers le joueur.
 | 33–66 % | Radiale de 4 bras tournants | toutes les 0.4 s |
 | < 33 % | Radiale de 5 bras tournants | toutes les 0.28 s |
 
+### Variante 3 — Bélier (ne tire pas)
+
+Ne lance aucun projectile : **charge** (immobile, télégraphe visuel — pulsation +
+clignotement blanc/rouge quand la direction est verrouillée), puis **fonce** très
+vite en ligne droite. La direction est verrouillée vers le joueur **peu avant** la
+fin de la charge (`RAM_AIM_LEAD`), donc on peut esquiver au dernier moment. Le dash
+**rebondit sur les murs** et **perd de la vitesse** progressivement jusqu'à
+s'arrêter, puis il recharge. Le danger est le **contact** (dégâts de contact du boss).
+Réglages : `RAM_CHARGE_TIME`, `RAM_AIM_LEAD`, `RAM_DASH_SPEED`, `RAM_DASH_DECEL`, `RAM_DASH_MIN`.
+
 ### Variante 2 — Barrage
 
 | Phase (PV) | Attaque | Cadence |

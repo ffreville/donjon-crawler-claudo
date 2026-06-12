@@ -10,3 +10,4 @@ export * from './combat.js';
 export * from './dungeon.js';
 export * from './characters.js';
 export * from './gameState.js';
+export * from './achievements.js';

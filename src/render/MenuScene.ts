@@ -29,10 +29,16 @@ export class MenuScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
 
-    createButton(this, width / 2, height * 0.55, 'Nouvelle partie', () =>
+    createButton(this, width / 2, height * 0.5, 'Nouvelle partie', () =>
       this.scene.start('CharacterSelectScene'),
     );
-    createButton(this, width / 2, height * 0.55 + 64, 'Options', () =>
+    createButton(this, width / 2, height * 0.5 + 58, 'Partie seedée', () =>
+      this.scene.start('SeedScene'),
+    );
+    createButton(this, width / 2, height * 0.5 + 116, 'Succès', () =>
+      this.scene.start('AchievementsScene', { returnTo: 'MenuScene' }),
+    );
+    createButton(this, width / 2, height * 0.5 + 174, 'Options', () =>
       this.scene.start('OptionsScene'),
     );
   }

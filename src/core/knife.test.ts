@@ -103,6 +103,24 @@ describe("Mom's Knife", () => {
     expect(s.player.knifeThrow).toBeNull(); // flew out and was caught on return
   });
 
+  it('applies tear effects (burn) through the blade', () => {
+    const { s, e } = arena(KNIFE_BASE_REACH - 0.3);
+    applyItem(s.player, ITEMS['fire-tears']!); // grants a burn tear effect
+    for (let i = 0; i < 30; i++) tick(s, NO_INPUT, FIXED_DT);
+    expect(e.effects.some((fx) => fx.kind === 'burn')).toBe(true);
+  });
+
+  it('range items extend the throw distance', () => {
+    const s = createGame(1, { enemyCount: 0 });
+    s.graceTimer = 0;
+    applyItem(s.player, ITEMS['knife']!);
+    s.player.knifeDir = { x: 1, y: 0 };
+    s.player.tearRange = 10; // double the base range (5)
+    for (let i = 0; i < 60; i++) tick(s, FIRE_RIGHT, FIXED_DT); // full charge
+    tick(s, NO_INPUT, FIXED_DT); // release
+    expect(s.player.knifeThrow!.maxDist).toBeGreaterThan(6); // scaled past the base max
+  });
+
   it('a thrown knife damages enemies in its flight path', () => {
     const { s, e } = arena(3); // enemy at +3, beyond the idle held reach (1.4)
     // Launch a throw straight at it (bypassing the charge step).

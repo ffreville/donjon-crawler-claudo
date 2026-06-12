@@ -1,26 +1,42 @@
 /**
  * Background music, on its own track (separate from the WebAudio sound effects in
- * audio.ts). A single looping <audio> element; Vite bundles the file referenced
- * below from the repo's `music/` folder. Volume/enable is independent of SFX.
+ * audio.ts). The tracks below play back-to-back as a looping playlist (track 1,
+ * then track 2, then back to track 1, ...). Vite bundles the files from the
+ * repo's `music/` folder.
  */
 
-const MUSIC_URL = new URL('../../music/Sous La Cave.mp3', import.meta.url).href;
-const MUSIC_VOLUME = 0.4;
+const TRACKS = [
+  new URL('../../music/cave-01.mp3', import.meta.url).href,
+  new URL('../../music/cave-02.mp3', import.meta.url).href,
+  new URL('../../music/cave-03.mp3', import.meta.url).href,
+  new URL('../../music/cave-04.mp3', import.meta.url).href,
+] as const;
+let musicVolume = 0.4;
 
 let el: HTMLAudioElement | null = null;
+let index = 0;
 
 function element(): HTMLAudioElement {
   if (!el) {
-    el = new Audio(MUSIC_URL);
-    el.loop = true;
-    el.volume = MUSIC_VOLUME;
+    el = new Audio(TRACKS[0]);
+    el.loop = false; // we advance manually so the playlist cycles
+    el.volume = musicVolume;
+    el.addEventListener('ended', () => {
+      index = (index + 1) % TRACKS.length;
+      const next = TRACKS[index];
+      if (!el || !next) return;
+      el.src = next;
+      void el.play().catch(() => {});
+    });
   }
   return el;
 }
 
-/** Starts the loop from the beginning when a run begins (respects the setting). */
+/** Starts the playlist from the first track when a run begins (respects the setting). */
 export function playMusicFromStart(on: boolean): void {
   const a = element();
+  index = 0;
+  a.src = TRACKS[0];
   if (!on) {
     a.pause();
     return;
@@ -29,10 +45,12 @@ export function playMusicFromStart(on: boolean): void {
   void a.play().catch(() => {}); // autoplay needs a gesture; the menu click provides one
 }
 
-/** Live enable/disable from the Options menu. */
-export function setMusicEnabled(on: boolean): void {
+/** Sets the music volume (0..1), applied live. Volume 0 pauses; >0 (re)starts it. */
+export function setMusicVolume(v: number): void {
+  musicVolume = Math.max(0, Math.min(1, v));
   const a = element();
-  if (on) void a.play().catch(() => {});
+  a.volume = musicVolume;
+  if (musicVolume > 0) void a.play().catch(() => {});
   else a.pause();
 }
 

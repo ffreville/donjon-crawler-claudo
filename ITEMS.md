@@ -54,12 +54,13 @@ source de vérité reste `items.ts`.
 | `familiar.piercing` | `boolean?` | (tireur) Larmes perçantes. |
 | `familiar.range` | `number?` | (tireur) Portée des larmes (tuiles). |
 | `knife` | `boolean?` | Remplace les larmes par le couteau (lame de mêlée, voir plus bas). |
+| `orbital` | `boolean?` | Accorde un orbital (mouche qui tourne autour du joueur et bloque un peu les tirs). |
 
 `StatusSpec` = `{ kind: 'burn' | 'slow', duration: number /* s */, magnitude: number }`.
 Pour `burn`, `magnitude` = dégâts/seconde ; pour `slow`, `magnitude` = multiplicateur
 de vitesse dans `(0, 1)`.
 
-## Objets existants (29)
+## Objets existants (32)
 
 ### Stats de base
 
@@ -120,7 +121,26 @@ de vitesse dans `(0, 1)`.
 > Réglages dans `gameState.ts` : `KNIFE_BASE_REACH` (portée au repos), `KNIFE_MAX_REACH`
 > (chargée), `KNIFE_CHARGE_TIME` (durée de charge), `KNIFE_HALF_WIDTH` (épaisseur),
 > `KNIFE_HIT_INTERVAL` (cadence de la lame tenue), `KNIFE_THROW_SPEED` (vitesse du
-> lancer). Les dégâts par coup = `tearDamage`.
+> lancer). Le couteau **bénéficie** des dégâts (`tearDamage`), des effets de larme
+> (`tearEffect` brûlure/gel, appliqués au contact comme au lancer) et de la portée
+> (`tearRange` étire la lame et la distance de jet). Il **ignore** cadence,
+> multishot, perçant et autoguidage.
+
+### Orbitaux
+
+Tournent autour du joueur (espacés régulièrement : 2 = opposés, 3 = à 120°) et
+**bloquent les projectiles ennemis** qu'ils interceptent. Hitbox volontairement
+petite (`ORBITAL_BLOCK_RADIUS`) pour ne pas être trop fort. La **mouche** existe
+en 3 exemplaires (ids distincts) → on peut en cumuler jusqu'à 3 par run.
+
+| ID | Nom | Effet | Champ(s) |
+|---|---|---|---|
+| `orbital-fly-1` | Orbital Fly | Une mouche en orbite qui bloque un peu les tirs. | `orbital: true` |
+| `orbital-fly-2` | Orbital Fly | (2ᵉ exemplaire) | `orbital: true` |
+| `orbital-fly-3` | Orbital Fly | (3ᵉ exemplaire) | `orbital: true` |
+
+> Réglages dans `gameState.ts` : `ORBITAL_RADIUS` (distance), `ORBITAL_SPEED`
+> (vitesse de rotation), `ORBITAL_BLOCK_RADIUS` (taille de la hitbox de blocage).
 
 ### Familiers
 

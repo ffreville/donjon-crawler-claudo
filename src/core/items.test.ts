@@ -25,6 +25,7 @@ const baseStats = (over: Partial<MutableStats> = {}): MutableStats => ({
   homing: false,
   flying: false,
   knife: false,
+  orbitals: 0,
   familiars: [],
   ...over,
 });
